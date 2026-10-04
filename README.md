@@ -30,9 +30,9 @@ Open http://127.0.0.1:8765/
 
 The crowd is one number. A gate changes that number once, not once per soldier. Multiply and add gates are purple (x2 gates are blue). Divide and subtract gates are red. The count caps at 20,000. One yellow jet sits on each lane and grants a bonus if you pass through it.
 
-The crowd starts with a basic Shot. Three pickups sit off the safest gate line: Rapid Bolts (fast, one target), Spread Shot (one shot hits three), and Cannonball (slow, heavy). Picking one up replaces the current weapon. Its name stays by the cannon.
+The crowd starts with Shot in a three-slot rack. Pads and drops add Rapid Bolts, Spread Shot, Cannonball, Needle Volley, Twin Lance, and Arc Mortar. A fourth distinct gun replaces a slot you are not using. Keys 1, 2, and 3, or the buttons by the cannon, switch which one fires. A duplicate shows FULL.
 
-Red waves march down the lane. When a pack is in range, blues fire the equipped weapon and reds lunge back. Each landed shot or swing removes soldiers — damage, fire rate, and pierce decide the trade, so a stronger weapon lets a smaller crowd beat a larger wave. The cannon still fires new soldiers on its own. The lane never pauses. After the waves, a boss waits at the end. Beating the boss clears the level. If your count hits zero you can retry. An even trade that empties both sides is a loss. Six lanes, then a victory screen.
+Each lane is a long march with waves, a labeled mid-boss, and a final boss. When a pack is in range, blues fire the equipped weapon and reds lunge back. Each landed shot or swing removes soldiers — damage, fire rate, and pierce decide the trade, so a stronger weapon lets a smaller crowd beat a larger wave. The cannon still fires new soldiers on its own. The lane never pauses. After the waves, a boss waits at the end. Beating the boss clears the level. If your count hits zero you can retry. An even trade that empties both sides is a loss. Six lanes, then a victory screen.
 
 On-screen soldiers are capped around 100 sprites so big numbers stay fast. The number itself is the real count.
 

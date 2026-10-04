@@ -6,6 +6,9 @@ import {
   laneCenter,
   createWorld,
   stepWorld,
+  weaponById,
+  switchWeapon,
+  heldWeapon,
 } from '../logic.js';
 import {
   FONT,
@@ -145,14 +148,38 @@ export class PlayScene extends Phaser.Scene {
       stroke: '#d7f4ff',
       strokeThickness: 3,
     }).setOrigin(0.5).setVisible(false);
-    this.gunText = this.add.text(270, 860, 'SHOT', {
-      fontFamily: FONT,
-      fontSize: '15px',
-      fontStyle: 'bold',
-      color: '#d6ecff',
-      stroke: '#102038',
-      strokeThickness: 4,
-    }).setOrigin(0.5).setDepth(4100);
+    this.gunText = this.add.text(270, 860, '', { fontFamily: FONT, fontSize: '14px' }).setVisible(false);
+    this.dropLabels = [];
+    for (let i = 0; i < 4; i++) {
+      this.dropLabels.push(this.add.text(0, 0, '', {
+        fontFamily: FONT, fontSize: '15px', fontStyle: 'bold', color: '#102033',
+        stroke: '#d7f4ff', strokeThickness: 3,
+      }).setOrigin(0.5).setVisible(false));
+    }
+    this.slotTexts = [];
+    this.slotZones = [];
+    for (let i = 0; i < 3; i++) {
+      const x = 270 + (i - 1) * 156;
+      const zone = this.add.zone(x, 918, 146, 52).setInteractive({ useHandCursor: true }).setDepth(4600);
+      zone.on('pointerdown', () => this.trySwitch(i));
+      this.slotZones.push(zone);
+      this.slotTexts.push(this.add.text(x, 918, (i + 1) + ' —', {
+        fontFamily: FONT, fontSize: '13px', fontStyle: 'bold', color: '#d6ecff',
+        stroke: '#102038', strokeThickness: 3,
+      }).setOrigin(0.5).setDepth(4601));
+    }
+    this.midMarks = [];
+    for (const wave of this.world.waves) {
+      if (!wave.mid) continue;
+      this.midMarks.push({
+        wave,
+        img: this.add.image(0, 0, 'lr-blob').setOrigin(0.5, 0.72).setVisible(false),
+        label: this.add.text(0, 0, wave.name.toUpperCase(), {
+          fontFamily: FONT, fontSize: '18px', fontStyle: 'bold', color: '#fff0ee',
+          stroke: '#5a0a12', strokeThickness: 4,
+        }).setOrigin(0.5).setDepth(4100).setVisible(false),
+      });
+    }
 
     const hudStyle = {
       fontFamily: FONT,
@@ -220,6 +247,9 @@ export class PlayScene extends Phaser.Scene {
     this.keyA = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A);
     this.keyD = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D);
     this.keyM = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.M);
+    this.key1 = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ONE);
+    this.key2 = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.TWO);
+    this.key3 = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.THREE);
     this.keyEnter = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER);
     this.keySpace = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
     this.input.keyboard.addCapture(['SPACE', 'UP', 'DOWN', 'LEFT', 'RIGHT']);
@@ -244,6 +274,7 @@ export class PlayScene extends Phaser.Scene {
   aimFromPointer(p) {
     if (this.mode === 'overlay') return;
     if (p.y < 70 && p.x > 430) return;
+    if (p.y > 870) return;
     this.pointerStamp = this.time.now;
     this.pointerLane = laneFromScreen(p.x);
     this.sfx.ensure();
@@ -264,8 +295,8 @@ export class PlayScene extends Phaser.Scene {
     if (!this.world.jet.resolved && this.level.proofWin.jet) {
       options.push({ y: this.world.jet.y, lane: this.level.jet.x });
     }
-    if (!this.world.pickup.resolved && this.level.proofWin.weapon) {
-      options.push({ y: this.world.pickup.y, lane: this.level.weapon.x });
+    if (this.world.pad && !this.world.pad.resolved && this.level.proofWin.weapon) {
+      options.push({ y: this.world.pad.y, lane: this.level.weapon.x });
     }
     options.sort((a, b) => a.y - b.y);
     return options.length ? options[0].lane : this.laneX;
@@ -303,6 +334,11 @@ export class PlayScene extends Phaser.Scene {
     }
 
     if (Phaser.Input.Keyboard.JustDown(this.keyM)) this.toggleMute();
+    if (this.mode === 'run') {
+      if (Phaser.Input.Keyboard.JustDown(this.key1)) this.trySwitch(0);
+      if (Phaser.Input.Keyboard.JustDown(this.key2)) this.trySwitch(1);
+      if (Phaser.Input.Keyboard.JustDown(this.key3)) this.trySwitch(2);
+    }
 
     if (this.mode === 'overlay') {
       if (Phaser.Input.Keyboard.JustDown(this.keyEnter) || Phaser.Input.Keyboard.JustDown(this.keySpace)) {
@@ -339,7 +375,7 @@ export class PlayScene extends Phaser.Scene {
     this.syncWorld();
     for (const g of ev.gates) this.juiceGate(g);
     if (ev.jet) this.juiceJet(ev.jet);
-    if (ev.weapon) this.juiceWeapon(ev.weapon);
+    for (let i = 0; i < ev.weapons.length; i++) this.juiceWeapon(ev.weapons[i]);
     this.juiceAttacks(ev.attacks);
     this.stepShots(dt);
 
@@ -391,13 +427,33 @@ export class PlayScene extends Phaser.Scene {
     this.log.push({ type: 'gate', index: g.index, gate: g.gate, count: shown(g.count) });
   }
 
+  trySwitch(index) {
+    if (this.mode !== 'run') return;
+    const res = switchWeapon(this.world.loadout, index);
+    this.world.weapon = heldWeapon(this.world.loadout);
+    if (res.changed) {
+      this.world.blueAcc = 0;
+      this.sfx.weapon();
+      this.spawnFloater(270, 840, (index + 1) + ' ' + this.world.weapon.name.toUpperCase(), '#d6ecff');
+    } else if (res.reason === 'empty') {
+      this.spawnFloater(270, 840, 'EMPTY', '#ffd0d4');
+    }
+  }
+
   juiceWeapon(ev) {
-    this.log.push({ type: 'weapon', hit: ev.hit, id: ev.id, count: shown(ev.count) });
+    this.log.push({ type: 'weapon', hit: ev.hit, id: ev.id, reason: ev.reason, slot: ev.slot, count: shown(ev.count) });
     if (!ev.hit) return;
-    this.pop = 1.45;
-    this.sfx.weapon();
-    const p = project(this.level.weapon.y, this.level.weapon.x, this.camY());
-    this.spawnFloater(p.x, p.y - 16, ev.name.toUpperCase(), '#b9ecff');
+    const p = project(ev.y, ev.x, this.camY());
+    let label = ev.name.toUpperCase();
+    let color = '#b9ecff';
+    if (ev.reason === 'full') { label = 'FULL'; color = '#ffd0d4'; }
+    else if (ev.reason === 'have') { label = 'HAVE IT'; color = '#ffe7a3'; }
+    else {
+      this.pop = 1.45;
+      this.sfx.weapon();
+      label = (ev.slot + 1) + ' ' + ev.name.toUpperCase();
+    }
+    this.spawnFloater(p.x, p.y - 18, label, color);
   }
 
   juiceAttacks(attacks) {
@@ -424,8 +480,8 @@ export class PlayScene extends Phaser.Scene {
 
   spawnVolley(a) {
     const kind = a.weapon;
-    const n = kind === 'ball' ? 1 : kind === 'spread' ? 3 : kind === 'bolts' ? 5 : 2;
-    const speed = kind === 'ball' ? 520 : kind === 'bolts' ? 980 : 760;
+    const n = kind === 'ball' || kind === 'mortar' ? 1 : kind === 'spread' ? 3 : kind === 'lance' ? 2 : kind === 'bolts' ? 5 : kind === 'needle' ? 6 : 2;
+    const speed = kind === 'mortar' ? 420 : kind === 'ball' ? 520 : kind === 'needle' || kind === 'bolts' ? 1040 : 760;
     for (let i = 0; i < n; i++) {
       const s = this.shotPool[this.shotCursor];
       this.shotCursor = (this.shotCursor + 1) % this.shotPool.length;
@@ -435,7 +491,7 @@ export class PlayScene extends Phaser.Scene {
       s.x = this.laneX + fan;
       s.y = this.frontY - 10 - i * 8;
       s.vy = speed;
-      s.life = kind === 'ball' ? 0.28 : 0.16;
+      s.life = kind === 'mortar' ? 0.42 : kind === 'ball' ? 0.28 : kind === 'needle' ? 0.12 : 0.16;
     }
   }
 
@@ -504,8 +560,8 @@ export class PlayScene extends Phaser.Scene {
       body = this.level.name + ' is clear.\n' + this.outcome.player + ' blues still standing.';
     } else if (this.outcome.diedAt === 'gate') {
       body = 'A red gate wiped the squad out\nbefore the ' + this.level.enemyName + '.';
-    } else if (this.outcome.diedAt === 'wave') {
-      body = 'A red wave overran the squad\nbefore the ' + this.level.enemyName + '.';
+    } else if (this.outcome.diedAt === 'wave' || this.outcome.diedAt === 'mid') {
+      body = (this.outcome.diedAt === 'mid' ? 'The mid-boss' : 'A red wave') + ' overran the squad\nbefore the ' + this.level.enemyName + '.';
     } else {
       body = 'The ' + this.level.enemyName + ' still has ' + this.outcome.enemy + '.\nSteer a richer line and try again.';
     }
@@ -785,43 +841,55 @@ export class PlayScene extends Phaser.Scene {
   }
 
   drawWeapon(cam) {
-    const drop = this.level.weapon;
     this.weaponGfx.clear();
-    if (!drop || this.world.pickup.resolved) {
-      this.weaponLabel.setVisible(false);
-      return;
-    }
-    const p = project(drop.y, drop.x, cam);
-    const show = p.vis && p.t > 0;
-    if (!show) {
-      this.weaponLabel.setVisible(false);
-      return;
-    }
-    const bob = Math.sin(this.clock * 5) * 3 * p.scale;
-    const s = Math.max(0.35, p.scale);
-    this.weaponGfx.setDepth(120 + p.y);
-    this.weaponGfx.fillStyle(0x000000, 0.2);
-    this.weaponGfx.fillEllipse(p.x, p.y + 16 * s + bob, 36 * s, 10 * s);
-    this.weaponGfx.fillStyle(0x16324a, 1);
-    this.weaponGfx.fillRoundedRect(p.x - 16 * s, p.y - 6 * s + bob, 32 * s, 22 * s, 4 * s);
-    this.weaponGfx.fillStyle(0x3ec6ff, 1);
-    if (drop.id === 'ball') {
-      this.weaponGfx.fillCircle(p.x, p.y - 8 * s + bob, 9 * s);
-      this.weaponGfx.fillStyle(0xffb15a, 1);
-      this.weaponGfx.fillCircle(p.x - 2 * s, p.y - 10 * s + bob, 4 * s);
-    } else if (drop.id === 'spread') {
-      for (const side of [-1, 0, 1]) {
-        this.weaponGfx.fillCircle(p.x + side * 8 * s, p.y - 10 * s + bob, 3.2 * s);
+    for (let i = 0; i < this.dropLabels.length; i++) this.dropLabels[i].setVisible(false);
+    const open = this.world.pickups.filter((drop) => !drop.resolved);
+    let labelN = 0;
+    for (let n = 0; n < open.length; n++) {
+      const drop = open[n];
+      const p = project(drop.y, drop.x, cam);
+      if (!p.vis || p.t <= 0) continue;
+      const bob = Math.sin(this.clock * 5 + n) * 3 * p.scale;
+      const s = Math.max(0.35, p.scale);
+      this.weaponGfx.setDepth(120 + p.y);
+      this.paintWeaponIcon(this.weaponGfx, drop.id, p.x, p.y + bob, s);
+      if (labelN < this.dropLabels.length) {
+        const label = this.dropLabels[labelN++];
+        label.setText(weaponById(drop.id).name.toUpperCase());
+        label.setVisible(true);
+        label.setPosition(p.x, p.y + 18 * s + bob);
+        label.setScale(Math.max(0.45, s));
+        label.setDepth(122 + p.y);
       }
-    } else {
-      this.weaponGfx.fillRect(p.x - 10 * s, p.y - 12 * s + bob, 20 * s, 3 * s);
-      this.weaponGfx.fillRect(p.x - 7 * s, p.y - 7 * s + bob, 16 * s, 3 * s);
-      this.weaponGfx.fillRect(p.x - 4 * s, p.y - 2 * s + bob, 12 * s, 3 * s);
     }
-    this.weaponLabel.setVisible(true);
-    this.weaponLabel.setPosition(p.x, p.y + 18 * s + bob);
-    this.weaponLabel.setScale(Math.max(0.45, s));
-    this.weaponLabel.setDepth(122 + p.y);
+  }
+
+  paintWeaponIcon(g, id, x, y, s) {
+    g.fillStyle(0x000000, 0.2);
+    g.fillEllipse(x, y + 16 * s, 36 * s, 10 * s);
+    g.fillStyle(0x16324a, 1);
+    g.fillRoundedRect(x - 16 * s, y - 6 * s, 32 * s, 22 * s, 4 * s);
+    if (id === 'ball' || id === 'mortar') {
+      g.fillStyle(id === 'mortar' ? 0xc46bff : 0xffb15a, 1);
+      g.fillCircle(x, y - 8 * s, (id === 'mortar' ? 11 : 9) * s);
+      g.fillStyle(0xfff1c9, 1);
+      g.fillCircle(x - 2 * s, y - 11 * s, 3.5 * s);
+    } else if (id === 'spread') {
+      g.fillStyle(0x8ef0c2, 1);
+      for (const side of [-1, 0, 1]) g.fillCircle(x + side * 8 * s, y - 10 * s, 3.2 * s);
+    } else if (id === 'lance') {
+      g.fillStyle(0xfff3c4, 1);
+      g.fillRect(x - 8 * s, y - 16 * s, 4 * s, 18 * s);
+      g.fillRect(x + 4 * s, y - 16 * s, 4 * s, 18 * s);
+    } else if (id === 'needle') {
+      g.fillStyle(0xd7f4ff, 1);
+      for (const side of [-6, -2, 2, 6]) g.fillRect(x + side * s, y - 14 * s, 1.6 * s, 14 * s);
+    } else {
+      g.fillStyle(0x3ec6ff, 1);
+      g.fillRect(x - 10 * s, y - 12 * s, 20 * s, 3 * s);
+      g.fillRect(x - 7 * s, y - 7 * s, 16 * s, 3 * s);
+      g.fillRect(x - 4 * s, y - 2 * s, 12 * s, 3 * s);
+    }
   }
 
   drawActors(cam) {
@@ -862,7 +930,25 @@ export class PlayScene extends Phaser.Scene {
       this.blob.setDepth(130 + bp.y);
     }
 
-    const waves = this.world.waves.filter((w) => w.alive > 0.05).sort((a, b) => a.front - b.front);
+    for (let i = 0; i < this.midMarks.length; i++) {
+      const mark = this.midMarks[i];
+      const wave = mark.wave;
+      const mp = project(wave.front + 20, 0, cam);
+      const show = wave.alive > 0.05 && mp.vis && mp.t > 0;
+      mark.img.setVisible(show);
+      mark.label.setVisible(show);
+      if (!show) continue;
+      const fracM = wave.count > 0 ? clamp(wave.alive / wave.count, 0, 1) : 0;
+      const sc = mp.scale * 0.72 * (0.78 + 0.22 * fracM);
+      mark.img.setPosition(mp.x, mp.y + this.lunge * 8);
+      mark.img.setScale(Math.max(0.16, sc));
+      mark.img.setDepth(128 + mp.y);
+      mark.label.setPosition(mp.x, mp.y - Math.max(28, 70 * mp.scale));
+      mark.label.setScale(Math.max(0.45, mp.scale));
+      mark.label.setDepth(4100);
+    }
+
+    const waves = this.world.waves.filter((w) => w.alive > 0.05 && !w.mid).sort((a, b) => a.front - b.front);
     let slot = 0;
     for (const w of waves) {
       const n = Math.max(3, Math.min(18, Math.ceil(Math.min(w.alive, 18))));
@@ -926,11 +1012,17 @@ export class PlayScene extends Phaser.Scene {
       if (!s.on) continue;
       const p = project(s.y, s.x, cam);
       if (!p.vis) continue;
-      if (s.kind === 'ball') {
-        g.fillStyle(0xfff1c9, 0.95);
-        g.fillCircle(p.x, p.y, Math.max(4, 9 * p.scale));
-        g.fillStyle(0xff7a32, 1);
-        g.fillCircle(p.x, p.y, Math.max(2.5, 6 * p.scale));
+      if (s.kind === 'ball' || s.kind === 'mortar') {
+        g.fillStyle(s.kind === 'mortar' ? 0xf3d0ff : 0xfff1c9, 0.95);
+        g.fillCircle(p.x, p.y, Math.max(4, (s.kind === 'mortar' ? 12 : 9) * p.scale));
+        g.fillStyle(s.kind === 'mortar' ? 0xa24bdf : 0xff7a32, 1);
+        g.fillCircle(p.x, p.y, Math.max(2.5, (s.kind === 'mortar' ? 8 : 6) * p.scale));
+      } else if (s.kind === 'lance') {
+        g.fillStyle(0xfff6cf, 1);
+        g.fillRect(p.x - 2, p.y - Math.max(8, 16 * p.scale), 4, Math.max(10, 18 * p.scale));
+      } else if (s.kind === 'needle') {
+        g.fillStyle(0xe8fbff, 1);
+        g.fillRect(p.x - 0.8, p.y - Math.max(8, 18 * p.scale), 1.6, Math.max(10, 20 * p.scale));
       } else if (s.kind === 'bolts') {
         g.fillStyle(0xfff3a0, 1);
         g.fillRect(p.x - 1.5, p.y - Math.max(6, 14 * p.scale), 3, Math.max(8, 16 * p.scale));
@@ -968,10 +1060,10 @@ export class PlayScene extends Phaser.Scene {
       this.youCap.setVisible(false);
       this.foeCap.setVisible(false);
       this.gunText.setVisible(false);
+      for (let i = 0; i < this.slotTexts.length; i++) this.slotTexts[i].setVisible(false);
       return;
     }
     this.countText.setVisible(true);
-    this.gunText.setVisible(true);
 
     this.youCap.setVisible(false);
     this.foeCap.setVisible(false);
@@ -979,9 +1071,21 @@ export class PlayScene extends Phaser.Scene {
     this.countText.setPosition(clamp(fp.x, 80, 460), clamp(fp.y, 150, 820));
     this.countText.setScale(this.pop);
     this.countText.setText(String(shown(this.count)));
-    const gun = project(this.cannonY() + 8, this.laneX, cam);
-    this.gunText.setText(this.world.weapon.name.toUpperCase());
-    this.gunText.setPosition(clamp(gun.x, 80, 460), Math.min(VIEW.height - 28, gun.y + 8));
+    for (let i = 0; i < 3; i++) {
+      const x = 270 + (i - 1) * 156;
+      const on = this.world.loadout.equipped === i && !!this.world.loadout.slots[i];
+      g.fillStyle(on ? 0x2a62e0 : 0x1b2430, 0.92);
+      g.fillRoundedRect(x - 68, 898, 136, 40, 8);
+      g.lineStyle(3, on ? 0xffe7a3 : 0x3d4e60, 1);
+      g.strokeRoundedRect(x - 68, 898, 136, 40, 8);
+      g.lineStyle(0, 0, 0);
+      const id = this.world.loadout.slots[i];
+      const name = id ? weaponById(id).name.toUpperCase() : '—';
+      const label = this.slotTexts[i];
+      label.setVisible(true);
+      label.setText((i + 1) + '  ' + name);
+      label.setColor(on ? '#fff8e8' : '#b7c6d6');
+    }
 
     const threat = this.nearestThreat();
     const tp = threat ? project(threat.front + (threat.boss ? 20 : 8), 0, cam) : null;

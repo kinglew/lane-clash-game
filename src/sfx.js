@@ -68,7 +68,10 @@ class Sfx {
     if (nowMs - (this.lastAttack || 0) < gap) return;
     this.lastAttack = nowMs;
     if (kind === 'bolts') this.tone(880, 0.03, 'square', 0.012, 0, 420);
+    else if (kind === 'needle') this.tone(1180, 0.02, 'square', 0.01, 0, 700);
+    else if (kind === 'lance') this.tone(520, 0.05, 'square', 0.016, 0, 260);
     else if (kind === 'spread') this.tone(640, 0.04, 'square', 0.014, 0, 280);
+    else if (kind === 'mortar') this.tone(90, 0.12, 'square', 0.022, 0, 50);
     else if (kind === 'ball') this.tone(140, 0.08, 'square', 0.02, 0, 70);
     else if (kind === 'swing') this.tone(210, 0.05, 'square', 0.012, 0, 90);
     else this.tone(740, 0.03, 'square', 0.011, 0, 360);

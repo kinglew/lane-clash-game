@@ -6,10 +6,15 @@ import {
   pickGateIndex,
   laneCenter,
   justCrossed,
+  SLOT_CAP,
   WEAPONS,
   RED_ATTACK,
   weaponById,
   weaponPower,
+  freshLoadout,
+  giveWeapon,
+  switchWeapon,
+  heldWeapon,
   fireTicks,
   resolveHits,
   createWorld,
@@ -52,19 +57,23 @@ test('pickGateIndex matches lane centers', () => {
 });
 
 test('weapons differ by damage, fire rate, and pierce', () => {
-  assert.deepEqual(
-    Object.values(WEAPONS).map((w) => [w.id, w.damage, w.rate, w.pierce]),
-    [
-      ['shot', 1, 2, 1],
-      ['bolts', 1, 5, 1],
-      ['spread', 1, 2, 3],
-      ['ball', 4, 1, 1],
-    ],
-  );
+  const rows = Object.values(WEAPONS).map((w) => [w.id, w.damage, w.rate, w.pierce]);
+  assert.deepEqual(rows.slice(0, 4), [
+    ['shot', 1, 2, 1],
+    ['bolts', 1, 5, 1],
+    ['spread', 1, 2, 3],
+    ['ball', 4, 1, 1],
+  ]);
+  assert.deepEqual(rows.slice(4), [
+    ['needle', 1, 8, 1],
+    ['lance', 2, 2, 2],
+    ['mortar', 6, 0.5, 2],
+  ]);
+  const keys = new Set(rows.map((r) => r.slice(1).join(',')));
+  assert.equal(keys.size, rows.length);
   assert.equal(weaponById('nope').id, 'shot');
-  assert.ok(weaponPower(WEAPONS.spread) > weaponPower(WEAPONS.bolts));
-  assert.ok(weaponPower(WEAPONS.bolts) > weaponPower(WEAPONS.ball));
-  assert.ok(weaponPower(WEAPONS.ball) > weaponPower(WEAPONS.shot));
+  assert.ok(weaponPower(WEAPONS.needle) > weaponPower(WEAPONS.shot));
+  assert.ok(weaponPower(WEAPONS.lance) > weaponPower(WEAPONS.ball));
   assert.equal(weaponPower(RED_ATTACK), weaponPower(WEAPONS.shot));
 
   const ticks = fireTicks(10, 2, 0.5, 0);
@@ -153,38 +162,80 @@ test('an even shot-for-shot trade that empties both sides is a loss', () => {
   assert.ok(world.boss.alive <= 0);
 });
 
-test('six levels: good gates plus the weapon beat the boss, a bad line dies in a wave', () => {
+test('a loadout holds three weapons and switches the one that fires', () => {
+  const loadout = freshLoadout();
+  assert.equal(SLOT_CAP, 3);
+  assert.equal(heldWeapon(loadout).id, 'shot');
+  assert.equal(giveWeapon(loadout, 'shot').reason, 'have');
+  const bolts = giveWeapon(loadout, 'bolts');
+  assert.equal(bolts.reason, 'slot');
+  assert.equal(bolts.slot, 1);
+  assert.equal(loadout.equipped, 1);
+  giveWeapon(loadout, 'spread');
+  const ball = giveWeapon(loadout, 'ball');
+  assert.equal(ball.reason, 'swap');
+  assert.notEqual(ball.slot, loadout.equipped);
+  assert.equal(loadout.slots[ball.slot], 'ball');
+  assert.equal(giveWeapon(loadout, 'spread').reason, 'full');
+  assert.equal(giveWeapon(loadout, 'nope').reason, 'full');
+  const flipped = switchWeapon(loadout, ball.slot);
+  assert.equal(flipped.changed, true);
+  assert.equal(heldWeapon(loadout).id, 'ball');
+  assert.equal(switchWeapon(loadout, ball.slot).reason, 'same');
+  const spare = freshLoadout();
+  giveWeapon(spare, 'needle', false);
+  assert.equal(spare.slots[1], 'needle');
+  assert.equal(spare.equipped, 0, 'a drop fills a slot without stealing the equipped gun');
+  assert.equal(switchWeapon(spare, 1).id, 'needle');
+  assert.equal(switchWeapon(spare, 2).reason, 'empty');
+});
+
+test('six longer levels have a mid-boss and a final boss', () => {
   assert.equal(LEVELS.length, 6);
+  const minEnd = [5400, 9000, 9800, 12000, 13000, 13000];
   let prevBoss = 0;
   for (const level of LEVELS) {
-    assert.ok(level.boss.count > prevBoss, level.name + ' boss should escalate');
+    assert.ok(level.boss.y >= minEnd[level.id - 1], level.name + ' lane ' + level.boss.y);
+    assert.ok(level.boss.count > prevBoss, level.name + ' final boss should escalate');
     prevBoss = level.boss.count;
-    assert.ok(level.weapon && level.weapon.radius > 0 && level.weapon.radius < 0.35);
-    assert.ok(WEAPONS[level.weapon.id] && level.weapon.id !== 'shot');
-    assert.ok(level.weapon.y < level.boss.y);
-    assert.ok(Math.abs(level.weapon.x) > 0.5, level.name + ' weapon should sit off center');
+    assert.equal(level.endY, level.boss.y);
+    assert.ok(level.rows.length >= 6, level.name + ' gates');
+    assert.ok(level.waves.length >= 6, level.name + ' waves');
+    const mids = level.waves.filter((w) => w.mid);
+    assert.equal(mids.length, 1, level.name + ' mid-boss');
+    assert.ok(mids[0].name && mids[0].count > 0);
+    assert.ok(mids[0].y > level.rows[0].y && mids[0].y < level.boss.y);
+    assert.ok(level.waves.some((w) => w.drop) || mids[0].drop, level.name + ' should drop a weapon');
+    assert.ok(level.weapon && Math.abs(level.weapon.x) > 0.5);
     assert.equal(level.proofWin.weapon, true);
     assert.equal(level.proofLose.weapon, false);
-    assert.ok(level.waves.length >= 3);
-    assert.equal(level.endY, level.boss.y);
     for (const row of level.rows) {
       assert.ok(row.gates.length === 2 || row.gates.length === 3);
     }
+    for (let i = 0; i < level.rows.length; i += 3) {
+      const slice = level.rows.slice(i, i + 3);
+      assert.ok(slice.some((row) => row.gates.some((g) => !g.good)), level.name + ' needs a bad gate');
+    }
 
     const win = playThrough(level, level.proofWin.gates, level.proofWin.jet, true);
-    assert.equal(win.won, true, level.name + ' should clear the boss');
+    assert.equal(win.won, true, level.name + ' should clear the final boss');
     assert.ok(win.count > 0);
     assert.equal(win.boss.alive, 0);
-    assert.equal(win.pickup.taken, true, level.name + ' missed the weapon');
+    assert.ok(win.waves.filter((w) => w.mid).every((w) => w.alive === 0));
+    assert.equal(win.pad.taken, true, level.name + ' missed the weapon pad');
     assert.equal(win.weapon.id, level.weapon.id);
+    assert.equal(win.loadout.slots[win.loadout.equipped], level.weapon.id);
+    assert.ok(win.loadout.slots.length === 3);
     assert.deepEqual(win.rows.map((r) => r.hit), level.proofWin.gates, level.name + ' missed a gate');
     if (level.proofWin.jet) assert.equal(win.jet.taken, true, level.name + ' missed the jet');
 
     const lose = playThrough(level, level.proofLose.gates, level.proofLose.jet, false);
     assert.equal(lose.lost, true, level.name + ' bad line survived with ' + lose.count);
-    assert.equal(lose.diedAt, 'wave', level.name + ' died at ' + lose.diedAt);
+    assert.ok(lose.diedAt === 'wave' || lose.diedAt === 'mid', level.name + ' died at ' + lose.diedAt);
     assert.equal(lose.count, 0);
-    assert.equal(lose.pickup.taken, false, level.name + ' bad line still grabbed the weapon');
+    assert.equal(lose.pad.taken, false);
     assert.equal(lose.weapon.id, 'shot');
   }
+  const first = playThrough(LEVELS[0], LEVELS[0].proofWin.gates, true, true);
+  assert.ok(first.loadout.slots.includes('needle') || first.loadout.slots.includes('lance'));
 });
