@@ -1,4 +1,5 @@
 // Pure rules for Lane Rush. No Phaser, so node can test them.
+import { RUN_SPEED, CROWD_DEPTH, START_FRONT, STEER_SPEED, LANE_CLAMP } from './view.js';
 
 export const COUNT_CAP = 20000;
 
@@ -65,70 +66,220 @@ export function justCrossed(prevY, nextY, lineY) {
   return prevY < lineY && nextY >= lineY;
 }
 
-export function createCombat(player, enemy, targetSeconds = 3) {
+// Real-time contact. Formations that overlap lose soldiers 1:1.
+// Small packs resolve in about a second. A large boss grinds for ~2.4s
+// of continuous contact instead of a separate countdown phase.
+
+export function contactRate(player, enemy) {
+  const smaller = Math.min(Math.max(0, player), Math.max(0, enemy));
+  if (smaller <= 0) return 0;
+  return Math.max(16, smaller / 2.4);
+}
+
+export function clashStep(player, enemy, dt, rate) {
   const p = Math.max(0, Number(player) || 0);
   const e = Math.max(0, Number(enemy) || 0);
-  const seconds = Math.min(4, Math.max(2, targetSeconds));
-  const smaller = Math.min(p, e);
-  const rate = smaller <= 0 ? 0 : smaller / seconds;
-  const done = p <= 0 || e <= 0;
-  const win = done ? e <= p : false;
+  if (p <= 0 || e <= 0 || !(dt > 0)) return { player: p, enemy: e, killed: 0 };
+  const speed = rate > 0 ? rate : contactRate(p, e);
+  let kill = speed * dt;
+  if (kill > p) kill = p;
+  if (kill > e) kill = e;
+  return { player: p - kill, enemy: e - kill, killed: kill };
+}
+
+export const ENEMY_MARCH = 130;
+export const PUSH_MULT = 0.42;
+export const WAVE_DEPTH = 150;
+export const BOSS_DEPTH = 210;
+export const ENGAGE = 250;
+export const BOSS_ENGAGE = 260;
+
+function yTouch(blueFront, redFront, redDepth) {
+  const blueBack = blueFront - CROWD_DEPTH;
+  const redTail = redFront + redDepth;
+  return redFront <= blueFront + 26 && redTail >= blueBack - 10;
+}
+
+export function createWorld(level, frontY = START_FRONT) {
   return {
-    player: p,
-    enemy: e,
-    rate,
-    targetSeconds: seconds,
-    done,
-    win,
+    count: level.start,
+    frontY,
+    laneX: 0,
+    rows: level.rows.map((row, index) => ({
+      y: row.y,
+      gates: row.gates,
+      index,
+      triggered: false,
+      hit: -1,
+    })),
+    jet: {
+      y: level.jet.y,
+      x: level.jet.x,
+      radius: level.jet.radius,
+      op: level.jet.op,
+      resolved: false,
+      taken: false,
+    },
+    waves: (level.waves || []).map((w, i) => ({
+      id: i,
+      y0: w.y,
+      front: w.y,
+      count: w.count,
+      alive: w.count,
+      depth: WAVE_DEPTH,
+      boss: false,
+    })),
+    boss: {
+      y0: level.boss.y,
+      front: level.boss.y,
+      count: level.boss.count,
+      alive: level.boss.count,
+      depth: BOSS_DEPTH,
+      boss: true,
+      name: level.boss.name || level.enemyName || 'Boss',
+    },
+    won: false,
+    lost: false,
+    diedAt: null,
+    pushing: false,
   };
 }
 
-export function stepCombat(state, dt) {
-  if (state.done) return state;
-  const dec = state.rate * Math.max(0, Number(dt) || 0);
-  const p = state.player - dec;
-  const e = state.enemy - dec;
-  if (p <= 0 || e <= 0) {
-    return {
-      ...state,
-      player: Math.max(0, p),
-      enemy: Math.max(0, e),
-      done: true,
-      // Same decrement: the side that started lower hits 0 first.
-      // Exact ties cross together and count as a win.
-      win: e <= p,
-    };
+function marchUnit(unit, world, step) {
+  if (unit.alive <= 0.001) return;
+  const engage = unit.boss ? BOSS_ENGAGE : ENGAGE;
+  const see = world.frontY > unit.front - engage || unit.front < unit.y0 - 0.5;
+  if (!see) return;
+  const hit = yTouch(world.frontY, unit.front, unit.depth);
+  const march = (unit.boss ? ENEMY_MARCH * 0.5 : ENEMY_MARCH) * step;
+  if (hit) {
+    // Stay pressed into the blue front until one side is gone.
+    unit.front = world.frontY - 8;
+  } else {
+    unit.front -= march;
   }
-  return { ...state, player: p, enemy: e, done: false, win: false };
 }
 
-export function resolveCombat(player, enemy, dt = 1 / 60, targetSeconds = 3) {
-  let state = createCombat(player, enemy, targetSeconds);
-  let elapsed = 0;
-  let guard = 0;
-  while (!state.done && guard < 20000) {
-    state = stepCombat(state, dt);
-    elapsed += dt;
-    guard += 1;
-  }
-  return { ...state, elapsed };
-}
+/**
+ * Advance the lane by dt seconds. laneX is the crowd's steered position.
+ * Mutates world. Returns the events that happened this step.
+ * The lane never pauses: gates, marching waves, and contact all share one clock.
+ */
+export function stepWorld(world, dt, laneX) {
+  const events = { gates: [], jet: null, clashes: [] };
+  if (world.won || world.lost) return events;
+  const step = Math.max(0, Number(dt) || 0);
+  if (step === 0) return events;
+  world.laneX = Math.max(-1, Math.min(1, Number(laneX) || 0));
 
-/** Apply gate indices in world order. takeJet applies the jet op when its line is crossed. */
-export function simulate(level, gateIndices, takeJet) {
-  let count = level.start;
-  const events = level.rows.map((row, i) => ({ y: row.y, type: 'row', row, i }));
-  if (level.jet) events.push({ y: level.jet.y, type: 'jet' });
-  events.sort((a, b) => a.y - b.y);
-  let ri = 0;
-  for (const e of events) {
+  const units = world.waves.concat([world.boss]);
+  const touching = units.some((u) => u.alive > 0.001 && yTouch(world.frontY, u.front, u.depth));
+  world.pushing = touching;
+  const speed = touching ? RUN_SPEED * PUSH_MULT : RUN_SPEED;
+  const prev = world.frontY;
+  world.frontY += speed * step;
+
+  for (const u of units) marchUnit(u, world, step);
+
+  const pending = [];
+  for (const row of world.rows) {
+    if (!row.triggered) pending.push({ y: row.y, type: 'row', row });
+  }
+  if (!world.jet.resolved) pending.push({ y: world.jet.y, type: 'jet' });
+  pending.sort((a, b) => a.y - b.y);
+  for (const e of pending) {
+    if (!(prev < e.y && world.frontY >= e.y)) continue;
     if (e.type === 'row') {
-      const idx = gateIndices[ri++];
-      const gate = e.row.gates[idx];
-      count = applyOp(count, gate);
-    } else if (takeJet) {
-      count = applyOp(count, level.jet.op);
+      e.row.triggered = true;
+      const idx = pickGateIndex(world.laneX, e.row.gates.length);
+      e.row.hit = idx;
+      const op = e.row.gates[idx];
+      world.count = applyOp(world.count, op);
+      events.gates.push({ index: e.row.index, gate: idx, count: world.count, op });
+      if (world.count <= 0) {
+        world.lost = true;
+        world.diedAt = 'gate';
+        return events;
+      }
+    } else {
+      world.jet.resolved = true;
+      const hit = Math.abs(world.laneX - world.jet.x) <= world.jet.radius + 1e-9;
+      world.jet.taken = hit;
+      if (hit) world.count = applyOp(world.count, world.jet.op);
+      events.jet = { hit, count: world.count };
     }
   }
-  return count;
+
+  for (const u of units) {
+    if (!yTouch(world.frontY, u.front, u.depth)) u.engageRate = 0;
+  }
+  const living = units.filter((u) => u.alive > 0.001 && yTouch(world.frontY, u.front, u.depth));
+  living.sort((a, b) => a.front - b.front || (a.boss === b.boss ? 0 : a.boss ? 1 : -1));
+  // One contact at a time so a wave is finished before the boss joins the pile.
+  // The cancel rate locks at first touch so a big pack finishes in about 2.4s
+  // instead of shrinking exponentially.
+  for (const u of living.slice(0, 1)) {
+    if (world.count <= 0) break;
+    if (!(u.engageRate > 0)) u.engageRate = contactRate(world.count, u.alive);
+    const res = clashStep(world.count, u.alive, step, u.engageRate);
+    if (res.killed <= 0) continue;
+    world.count = res.player;
+    u.alive = res.enemy;
+    events.clashes.push({
+      boss: !!u.boss,
+      id: u.boss ? 'boss' : u.id,
+      killed: res.killed,
+      left: u.alive,
+      count: world.count,
+    });
+    if (world.count <= 0.001) {
+      world.count = 0;
+      world.lost = true;
+      world.diedAt = u.boss ? 'boss' : 'wave';
+      return events;
+    }
+    if (u.boss && u.alive <= 0.001) {
+      u.alive = 0;
+      world.won = true;
+      return events;
+    }
+  }
+
+  if (world.boss.alive <= 0.001 && world.count > 0) {
+    world.boss.alive = 0;
+    world.won = true;
+  }
+  return events;
+}
+
+/** Steer a keyboard-speed crowd through gate choices and run the real-time lane. */
+export function playThrough(level, indices, wantJet, dt = 1 / 90) {
+  const world = createWorld(level, START_FRONT);
+  let lane = 0;
+  let guard = 0;
+  while (!world.won && !world.lost && guard < 800000) {
+    guard += 1;
+    const options = [];
+    for (const row of world.rows) {
+      if (!row.triggered) {
+        options.push({
+          y: row.y,
+          lane: laneCenter(indices[row.index], row.gates.length),
+        });
+      }
+    }
+    if (!world.jet.resolved && wantJet) options.push({ y: world.jet.y, lane: level.jet.x });
+    options.sort((a, b) => a.y - b.y);
+    let target = options.length ? options[0].lane : lane;
+    if (target < -LANE_CLAMP) target = -LANE_CLAMP;
+    if (target > LANE_CLAMP) target = LANE_CLAMP;
+    const maxStep = STEER_SPEED * dt;
+    const d = target - lane;
+    if (Math.abs(d) <= maxStep) lane = target;
+    else lane += Math.sign(d) * maxStep;
+    stepWorld(world, dt, lane);
+    if (world.frontY > level.boss.y + 2500) break;
+  }
+  world.finalLane = lane;
+  return world;
 }

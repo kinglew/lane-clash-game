@@ -6,17 +6,17 @@ import {
   pickGateIndex,
   laneCenter,
   justCrossed,
-  createCombat,
-  stepCombat,
-  resolveCombat,
-  simulate,
+  contactRate,
+  clashStep,
+  createWorld,
+  stepWorld,
+  playThrough,
   mul,
   add,
   div,
   sub,
 } from '../src/logic.js';
 import { LEVELS } from '../src/levels.js';
-import { RUN_SPEED, STEER_SPEED, START_FRONT, LANE_CLAMP } from '../src/view.js';
 
 test('gate math multiplies, adds, divides, subtracts, and caps', () => {
   assert.equal(applyOp(10, mul(2)), 20);
@@ -47,94 +47,76 @@ test('pickGateIndex matches lane centers', () => {
   assert.equal(justCrossed(16, 20, 15), false);
 });
 
-test('combat is 1:1 and resolves in 2-4 seconds', () => {
-  const win = resolveCombat(100, 40, 1 / 60, 3);
-  assert.equal(win.win, true);
-  assert.equal(win.enemy, 0);
-  assert.ok(win.player > 59 && win.player < 61, 'player leftover ' + win.player);
-  assert.ok(win.elapsed >= 2 && win.elapsed <= 4, 'elapsed ' + win.elapsed);
-
-  const lose = resolveCombat(40, 100, 1 / 60, 3);
-  assert.equal(lose.win, false);
-  assert.equal(lose.player, 0);
-  assert.ok(lose.enemy > 59 && lose.enemy < 61, 'enemy leftover ' + lose.enemy);
-  assert.ok(lose.elapsed >= 2 && lose.elapsed <= 4);
-
-  const tie = resolveCombat(50, 50, 1 / 60, 3);
-  assert.equal(tie.win, true);
-  assert.equal(tie.player, 0);
-  assert.equal(tie.enemy, 0);
-  assert.ok(Math.abs(tie.elapsed - 3) < 0.05, 'tie elapsed ' + tie.elapsed);
-
-  let state = createCombat(80, 50, 3);
-  state = stepCombat(state, 0.5);
-  assert.ok(Math.abs((80 - state.player) - (50 - state.enemy)) < 1e-6);
-  assert.equal(state.done, false);
-  const stuck = stepCombat(state, 0);
-  assert.equal(stuck.player, state.player);
-
-  const already = createCombat(0, 25, 3);
-  assert.equal(already.done, true);
-  assert.equal(already.win, false);
-  const empty = createCombat(0, 0, 3);
-  assert.equal(empty.win, true);
+test('contact cancels one for one and a large pack lasts about 2.4s', () => {
+  let player = 5000;
+  let enemy = 1200;
+  const rate = contactRate(player, enemy);
+  assert.ok(Math.abs(rate - 1200 / 2.4) < 1e-9);
+  let elapsed = 0;
+  while (enemy > 1e-6 && elapsed < 5) {
+    const next = clashStep(player, enemy, 1 / 60, rate);
+    assert.ok(Math.abs((player - next.player) - (enemy - next.enemy)) < 1e-6);
+    player = next.player;
+    enemy = next.enemy;
+    elapsed += 1 / 60;
+  }
+  assert.ok(Math.abs(elapsed - 2.4) < 0.05, 'elapsed ' + elapsed);
+  assert.ok(Math.abs(player - 3800) < 1, 'leftover ' + player);
+  assert.equal(contactRate(8, 8), 16);
+  const stuck = clashStep(40, 10, 0, 16);
+  assert.equal(stuck.killed, 0);
+  assert.equal(stuck.player, 40);
 });
 
-function simulatePath(level, indices, wantJet) {
-  const events = level.rows.map((row, i) => ({ y: row.y, type: 'row', row, i }));
-  events.push({ y: level.jet.y, type: 'jet' });
-  events.sort((a, b) => a.y - b.y);
-  let lane = 0;
-  let y = START_FRONT;
-  let count = level.start;
-  let jetTaken = false;
-  let hits = [];
-  let eIndex = 0;
-  const dt = 1 / 120;
+test('the lane keeps moving while a wave is in contact', () => {
+  const level = LEVELS[0];
+  const world = createWorld(level, level.waves[0].y - 20);
+  world.waves[0].front = world.frontY - 8;
+  const y0 = world.frontY;
+  const count0 = world.count;
+  const alive0 = world.waves[0].alive;
+  const ev = stepWorld(world, 0.2, 0);
+  assert.equal(ev.clashes.length, 1);
+  assert.equal(ev.clashes[0].boss, false);
+  assert.ok(Math.abs((count0 - world.count) - (alive0 - world.waves[0].alive)) < 1e-4);
+  assert.ok(world.frontY > y0, 'front did not advance');
+  assert.equal(world.won, false);
+  assert.equal(world.lost, false);
+  assert.equal(world.pushing, true);
+});
+
+test('an even boss fight is a loss, not a tie win', () => {
+  const level = LEVELS[0];
+  const world = createWorld(level, level.boss.y - 5);
+  world.count = level.boss.count;
+  world.boss.front = world.frontY - 8;
+  for (const wave of world.waves) wave.alive = 0;
   let guard = 0;
-  while (y < level.endY - 0.001 && guard < 400000) {
+  while (!world.lost && !world.won && guard < 20000) {
+    stepWorld(world, 1 / 60, 0);
     guard += 1;
-    let target = lane;
-    if (eIndex < events.length) {
-      const e = events[eIndex];
-      if (e.type === 'row') target = laneCenter(indices[e.i], e.row.gates.length);
-      else if (wantJet) target = level.jet.x;
-    }
-    target = Math.max(-LANE_CLAMP, Math.min(LANE_CLAMP, target));
-    const step = STEER_SPEED * dt;
-    const d = target - lane;
-    if (Math.abs(d) <= step) lane = target;
-    else lane += Math.sign(d) * step;
-
-    const prev = y;
-    y = Math.min(level.endY, y + RUN_SPEED * dt);
-    while (eIndex < events.length && prev < events[eIndex].y && y >= events[eIndex].y) {
-      const e = events[eIndex];
-      if (e.type === 'row') {
-        const idx = pickGateIndex(lane, e.row.gates.length);
-        count = applyOp(count, e.row.gates[idx]);
-        hits.push(idx);
-      } else if (Math.abs(lane - level.jet.x) <= level.jet.radius + 1e-6) {
-        jetTaken = true;
-        count = applyOp(count, level.jet.op);
-      }
-      eIndex += 1;
-      if (count <= 0) return { count, jetTaken, lane, hits };
-    }
   }
-  return { count, jetTaken, lane, hits };
-}
+  assert.equal(world.lost, true);
+  assert.equal(world.won, false);
+  assert.equal(world.diedAt, 'boss');
+  assert.equal(world.count, 0);
+  assert.ok(world.boss.alive <= 0.001);
+});
 
-test('six levels escalate and the intended lines win or lose', () => {
+test('six levels stream waves into a boss, and the intended lines win or lose', () => {
   assert.equal(LEVELS.length, 6);
-  let prevEnemy = 0;
+  let prevBoss = 0;
   for (const level of LEVELS) {
-    assert.ok(level.enemy > prevEnemy, level.name + ' enemy should escalate');
-    prevEnemy = level.enemy;
+    assert.ok(level.boss && level.boss.count > prevBoss, level.name + ' boss should escalate');
+    prevBoss = level.boss.count;
+    assert.ok(level.waves && level.waves.length >= 3, level.name + ' needs a stream of waves');
+    assert.equal(level.endY, level.boss.y);
+    assert.ok(level.waves[level.waves.length - 1].y < level.boss.y);
     assert.equal(level.proofWin.gates.length, level.rows.length);
     assert.equal(level.proofLose.gates.length, level.rows.length);
     assert.ok(level.jet && level.jet.radius > 0);
     assert.ok(level.endY > level.jet.y);
+    assert.equal(level.enemy, undefined);
     for (const row of level.rows) {
       assert.ok(row.gates.length === 2 || row.gates.length === 3);
       assert.ok(level.endY > row.y);
@@ -145,26 +127,24 @@ test('six levels escalate and the intended lines win or lose', () => {
       assert.ok(bad, level.name + ' needs a bad gate every few rows');
     }
 
-    const win = simulate(level, level.proofWin.gates, level.proofWin.jet);
-    const lose = simulate(level, level.proofLose.gates, level.proofLose.jet);
-    assert.ok(win > level.enemy, level.name + ' win path ' + win + ' vs ' + level.enemy);
-    assert.ok(lose < level.enemy, level.name + ' lose path ' + lose + ' vs ' + level.enemy);
+    const win = playThrough(level, level.proofWin.gates, level.proofWin.jet);
+    assert.equal(win.won, true, level.name + ' win path should clear the boss');
+    assert.ok(win.count > 0, level.name + ' win leftover ' + win.count);
+    assert.equal(win.boss.alive, 0);
+    assert.deepEqual(win.rows.map((r) => r.hit), level.proofWin.gates, level.name + ' missed a gate');
+    if (level.proofWin.jet) assert.equal(win.jet.taken, true, level.name + ' missed the jet');
+
+    const lose = playThrough(level, level.proofLose.gates, level.proofLose.jet);
+    assert.equal(lose.lost, true, level.name + ' bad line should die');
+    assert.equal(lose.won, false);
+    assert.equal(lose.diedAt, 'wave', level.name + ' bad line died at ' + lose.diedAt + ' with ' + lose.count);
+    assert.equal(lose.count, 0);
+
     if (level.needsJet) {
-      const missed = simulate(level, level.proofWin.gates, false);
-      assert.ok(missed < level.enemy, level.name + ' without jet should lose (' + missed + ')');
-    }
-
-    const driven = simulatePath(level, level.proofWin.gates, true);
-    assert.deepEqual(driven.hits, level.proofWin.gates, level.name + ' steering missed a gate ' + driven.hits);
-    if (level.proofWin.jet || level.needsJet) {
-      assert.equal(driven.jetTaken, true, level.name + ' steering missed the jet');
-    }
-    assert.ok(driven.count > level.enemy, level.name + ' steered count ' + driven.count);
-
-    const sameLine = level.proofLose.gates.every((g, i) => g === level.proofWin.gates[i]);
-    if (!sameLine) {
-      const badDrive = simulatePath(level, level.proofLose.gates, level.proofLose.jet);
-      assert.ok(badDrive.count < level.enemy, level.name + ' bad steer still won with ' + badDrive.count);
+      const missed = playThrough(level, level.proofWin.gates, false);
+      assert.equal(missed.won, false, level.name + ' without the jet should lose');
+      assert.equal(missed.jet.taken, false);
+      assert.equal(missed.diedAt, 'wave', level.name + ' jet miss died at ' + missed.diedAt);
     }
   }
 });

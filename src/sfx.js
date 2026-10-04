@@ -56,6 +56,13 @@ class Sfx {
     } catch (err) { /* audio backend missing */ }
   }
 
+  clash(nowMs) {
+    if (!this.ctx || this.muted) return;
+    if (nowMs - (this.lastClash || 0) < 110) return;
+    this.lastClash = nowMs;
+    this.tone(160 + Math.random() * 30, 0.045, 'square', 0.018, 0, 70);
+  }
+
   shoot(nowMs) {
     if (!this.ctx || this.muted) return;
     if (nowMs - this.lastShoot < 120) return;

@@ -1,13 +1,11 @@
 import Phaser from 'phaser';
 import { LEVELS } from '../levels.js';
 import {
-  applyOp,
   opLabel,
   pickGateIndex,
   laneCenter,
-  justCrossed,
-  createCombat,
-  stepCombat,
+  createWorld,
+  stepWorld,
 } from '../logic.js';
 import {
   FONT,
@@ -21,7 +19,6 @@ import {
   LANE_CLAMP,
   MAX_BLUE,
   MAX_RED,
-  COMBAT_SECONDS,
   GO_DELAY,
 } from '../view.js';
 import { ensureArt, paintBanner, paintCannon } from '../art.js';
@@ -58,7 +55,9 @@ export class PlayScene extends Phaser.Scene {
     this.count = this.level.start;
     this.laneX = 0;
     this.targetX = 0;
-    this.frontY = START_FRONT;
+    this.world = createWorld(this.level, START_FRONT);
+    this.count = this.world.count;
+    this.frontY = this.world.frontY;
     this.goTimer = this.smoke ? 0 : GO_DELAY;
     this.clock = 0;
     this.pop = 1;
@@ -69,8 +68,7 @@ export class PlayScene extends Phaser.Scene {
     this.pointerLane = 0;
     this.leaving = false;
     this.outcome = null;
-    this.combat = null;
-    this.combatHold = 0;
+    this.pending = 0;
     this.jetTaken = false;
     this.lead = false;
     this.tracers = [];
@@ -126,11 +124,6 @@ export class PlayScene extends Phaser.Scene {
     }).setOrigin(0.5).setVisible(false);
     this.jetResolved = false;
 
-    this.crossings = [];
-    for (const row of this.rows) this.crossings.push({ y: row.y, type: 'row', row, done: false });
-    this.crossings.push({ y: this.level.jet.y, type: 'jet', done: false });
-    this.crossings.sort((a, b) => a.y - b.y);
-
     const hudStyle = {
       fontFamily: FONT,
       fontStyle: 'bold',
@@ -168,7 +161,7 @@ export class PlayScene extends Phaser.Scene {
       stroke: '#102038',
       strokeThickness: 8,
     }).setOrigin(0.5).setDepth(4100);
-    this.enemyText = this.add.text(270, 180, String(this.level.enemy), {
+    this.enemyText = this.add.text(270, 180, String(this.level.boss.count), {
       fontFamily: FONT,
       fontSize: '58px',
       fontStyle: 'bold',
@@ -232,15 +225,17 @@ export class PlayScene extends Phaser.Scene {
   }
 
   smokeTarget() {
-    for (const e of this.crossings) {
-      if (e.done) continue;
-      if (e.type === 'row') {
-        const idx = this.level.proofWin.gates[e.row.index];
-        return laneCenter(idx, e.row.gates.length);
-      }
-      return this.level.jet.x;
+    const options = [];
+    for (const row of this.world.rows) {
+      if (row.triggered) continue;
+      const idx = this.level.proofWin.gates[row.index];
+      options.push({ y: row.y, lane: laneCenter(idx, row.gates.length) });
     }
-    return this.laneX;
+    if (!this.world.jet.resolved && this.level.proofWin.jet) {
+      options.push({ y: this.world.jet.y, lane: this.level.jet.x });
+    }
+    options.sort((a, b) => a.y - b.y);
+    return options.length ? options[0].lane : this.laneX;
   }
 
   steer(dt) {
@@ -283,13 +278,11 @@ export class PlayScene extends Phaser.Scene {
     }
 
     this.steer(dt);
-
     if (this.mode === 'run') this.updateRun(dt);
-    else if (this.mode === 'combat') this.updateCombat(dt);
 
     touchLane({
       level: this.level.id,
-      count: this.mode === 'combat' && this.combat ? shown(this.combat.player) : this.count,
+      count: shown(this.count),
       mode: this.mode,
       log: this.log,
     });
@@ -297,27 +290,27 @@ export class PlayScene extends Phaser.Scene {
   }
 
   updateRun(dt) {
-    const prev = this.frontY;
-    if (this.goTimer > 0) this.goTimer -= dt;
-    else this.frontY += RUN_SPEED * dt;
-
-    for (const e of this.crossings) {
-      if (e.done) continue;
-      if (!justCrossed(prev, this.frontY, e.y)) continue;
-      e.done = true;
-      if (e.type === 'row') this.applyRow(e.row);
-      else this.applyJet();
-      if (this.mode !== 'run') return;
+    if (this.pending > 0) {
+      this.pending -= dt;
+      if (this.pending <= 0) this.finishRun();
+      return;
     }
-
-    if (this.frontY >= this.level.endY) {
-      this.frontY = this.level.endY;
-      this.beginCombat();
+    if (this.goTimer > 0) {
+      this.goTimer -= dt;
       return;
     }
 
+    const ev = stepWorld(this.world, dt, this.laneX);
+    this.syncWorld();
+    for (const g of ev.gates) this.juiceGate(g);
+    if (ev.jet) this.juiceJet(ev.jet);
+    if (ev.clashes.length) {
+      this.sfx.ensure();
+      this.sfx.clash(this.time.now);
+    }
+
     this.fireCd -= dt;
-    if (this.goTimer <= 0 && this.fireCd <= 0) {
+    if (this.fireCd <= 0 && this.count > 0) {
       this.fireCd = 0.09;
       this.recoil = 1;
       this.sfx.shoot(this.time.now);
@@ -327,19 +320,30 @@ export class PlayScene extends Phaser.Scene {
         life: 0.28,
       });
     }
-    for (const t of this.tracers) {
-      t.y += 820 * dt;
-      t.life -= dt;
+    for (const tr of this.tracers) {
+      tr.y += 820 * dt;
+      tr.life -= dt;
     }
-    this.tracers = this.tracers.filter((t) => t.life > 0 && t.y < this.frontY);
+    this.tracers = this.tracers.filter((tr) => tr.life > 0 && tr.y < this.frontY + 40);
+
+    if (this.world.won || this.world.lost) this.pending = 0.28;
   }
 
-  applyRow(row) {
-    const idx = pickGateIndex(this.laneX, row.gates.length);
-    const op = row.gates[idx];
-    row.triggered = true;
-    row.hit = idx;
-    this.count = applyOp(this.count, op);
+  syncWorld() {
+    this.count = this.world.count;
+    this.frontY = this.world.frontY;
+    this.jetTaken = this.world.jet.taken;
+    this.jetResolved = this.world.jet.resolved;
+    this.lead = this.jetTaken;
+    for (let i = 0; i < this.rows.length; i++) {
+      this.rows[i].triggered = this.world.rows[i].triggered;
+      this.rows[i].hit = this.world.rows[i].hit;
+    }
+  }
+
+  juiceGate(g) {
+    const row = this.rows[g.index];
+    const op = g.op;
     this.pop = 1.55;
     this.sfx.gate(!!op.good);
     if (!op.good) {
@@ -348,76 +352,31 @@ export class PlayScene extends Phaser.Scene {
     } else {
       this.cameras.main.shake(90, 0.0035);
     }
-    const p = project(row.y, laneCenter(idx, row.gates.length), this.camY());
+    const p = project(row.y, laneCenter(g.gate, row.gates.length), this.camY());
     this.spawnFloater(p.x, p.y, opLabel(op), op.good ? '#fff6cf' : '#ffd4dc');
-    this.log.push({ type: 'gate', index: row.index, gate: idx, count: this.count });
-    if (this.count <= 0) this.wipe();
+    this.log.push({ type: 'gate', index: g.index, gate: g.gate, count: shown(g.count) });
   }
 
-  applyJet() {
-    this.jetResolved = true;
-    const hit = Math.abs(this.laneX - this.level.jet.x) <= this.level.jet.radius;
-    if (!hit) {
-      this.log.push({ type: 'jet', hit: false, count: this.count });
-      return;
-    }
-    this.jetTaken = true;
-    this.lead = true;
-    this.count = applyOp(this.count, this.level.jet.op);
+  juiceJet(ev) {
+    this.log.push({ type: 'jet', hit: ev.hit, count: shown(ev.count) });
+    if (!ev.hit) return;
     this.pop = 1.7;
     this.sfx.jet();
     this.cameras.main.shake(120, 0.005);
     const p = project(this.level.jet.y, this.level.jet.x, this.camY());
     this.spawnFloater(p.x, p.y - 20, 'JET ' + opLabel(this.level.jet.op), '#ffe56a');
-    this.log.push({ type: 'jet', hit: true, count: this.count });
-    if (this.count <= 0) this.wipe();
   }
 
-  wipe() {
+  finishRun() {
     if (this.mode === 'overlay') return;
-    this.outcome = {
-      kind: 'lose',
-      win: false,
-      player: 0,
-      enemy: this.level.enemy,
-      preBoss: true,
-    };
-    this.sfx.lose();
-    this.showOverlay('lose');
-  }
-
-  beginCombat() {
-    if (this.mode !== 'run') return;
-    if (this.count <= 0) {
-      this.wipe();
-      return;
-    }
-    this.mode = 'combat';
-    this.combat = createCombat(this.count, this.level.enemy, COMBAT_SECONDS);
-    this.combatStartP = Math.max(0.0001, this.combat.player);
-    this.combatStartE = Math.max(0.0001, this.combat.enemy);
-    this.combatHold = 0;
-    this.cameras.main.shake(200, 0.01);
-  }
-
-  updateCombat(dt) {
-    if (!this.combat.done) this.combat = stepCombat(this.combat, dt);
-    if (this.combat.done) {
-      this.combatHold += dt;
-      if (this.combatHold > 0.42) this.finishCombat();
-    }
-  }
-
-  finishCombat() {
-    if (this.mode === 'overlay') return;
-    const win = !!this.combat.win;
+    const win = !!this.world.won && !this.world.lost;
     const last = this.levelIndex >= LEVELS.length - 1;
     this.outcome = {
       kind: win ? (last ? 'victory' : 'win') : 'lose',
       win,
-      player: shown(this.combat.player),
-      enemy: shown(this.combat.enemy),
-      preBoss: false,
+      player: shown(this.world.count),
+      enemy: shown(this.world.boss.alive),
+      diedAt: this.world.diedAt,
     };
     if (win) this.sfx.win();
     else this.sfx.lose();
@@ -436,8 +395,10 @@ export class PlayScene extends Phaser.Scene {
       body = 'You rushed all 6 lanes.\nThe red mobs are scattered across the sand.';
     } else if (kind === 'win') {
       body = this.level.name + ' is clear.\n' + this.outcome.player + ' blues still standing.';
-    } else if (this.outcome.preBoss) {
-      body = 'The gates wiped the squad out\nbefore the ' + this.level.enemyName + '.';
+    } else if (this.outcome.diedAt === 'gate') {
+      body = 'A red gate wiped the squad out\nbefore the ' + this.level.enemyName + '.';
+    } else if (this.outcome.diedAt === 'wave') {
+      body = 'A red wave overran the squad\nbefore the ' + this.level.enemyName + '.';
     } else {
       body = 'The ' + this.level.enemyName + ' still has ' + this.outcome.enemy + '.\nSteer a richer line and try again.';
     }
@@ -510,6 +471,13 @@ export class PlayScene extends Phaser.Scene {
       ease: 'Cubic.easeOut',
       onComplete: () => { if (t.active) t.destroy(); },
     });
+  }
+
+  nearestThreat() {
+    const units = this.world.waves.filter((w) => w.alive > 0.05);
+    if (this.world.boss.alive > 0.05) units.push(this.world.boss);
+    units.sort((a, b) => a.front - b.front);
+    return units[0] || null;
   }
 
   camY() {
@@ -709,22 +677,7 @@ export class PlayScene extends Phaser.Scene {
   }
 
   drawActors(cam) {
-    let blueVis;
-    let redVis;
-    let redFrac = 1;
-    if (this.mode === 'combat' || (this.mode === 'overlay' && this.combat)) {
-      const pf = clamp(this.combat.player / this.combatStartP, 0, 1);
-      const ef = clamp(this.combat.enemy / this.combatStartE, 0, 1);
-      blueVis = this.combat.player <= 0.001 ? 0 : Math.max(1, Math.round(Math.min(MAX_BLUE, Math.max(this.count, 1)) * pf));
-      // Use the pre-fight visual budget so a huge army visibly melts down.
-      const blueBudget = Math.min(MAX_BLUE, Math.max(12, this.count));
-      blueVis = this.combat.player <= 0.001 ? 0 : Math.max(1, Math.round(blueBudget * pf));
-      redVis = this.combat.enemy <= 0.001 ? 0 : Math.max(1, Math.round(MAX_RED * ef));
-      redFrac = ef;
-    } else {
-      blueVis = this.count <= 0 ? 0 : Math.min(MAX_BLUE, this.count);
-      redVis = MAX_RED;
-    }
+    const blueVis = this.count <= 0.001 ? 0 : Math.min(MAX_BLUE, Math.max(1, Math.ceil(Math.min(this.count, MAX_BLUE))));
 
     for (let i = 0; i < this.blues.length; i++) {
       const img = this.blues[i];
@@ -746,46 +699,42 @@ export class PlayScene extends Phaser.Scene {
       img.setRotation((slot.spin) * 0.15);
     }
 
+    const boss = this.world.boss;
     const grow = 1.02 + (this.level.id - 1) * 0.055;
-    const bp = project(this.level.endY + 16, 0.02, cam);
-    const blobShow = (bp.vis && bp.t > 0) || this.mode !== 'run';
+    const frac = boss.count > 0 ? clamp(boss.alive / boss.count, 0, 1) : 0;
+    const bp = project(boss.front + 24, 0.02, cam);
+    const blobShow = boss.alive > 0.05 && bp.vis && bp.t > 0;
     this.blob.setVisible(blobShow);
     if (blobShow) {
-      const sc = (this.mode === 'run' ? bp.scale : Math.max(bp.scale, 0.72)) * grow * (0.72 + 0.28 * redFrac);
+      const sc = bp.scale * grow * (0.72 + 0.28 * frac);
       const pulse = 1 + Math.sin(this.clock * 3) * 0.03;
-      this.blob.setPosition(this.mode === 'run' ? bp.x : VIEW.centerX, this.mode === 'run' ? bp.y : Math.min(bp.y, 430));
+      this.blob.setPosition(bp.x, bp.y);
       this.blob.setScale(Math.max(0.2, sc * pulse));
-      this.blob.setDepth(130 + (this.mode === 'run' ? bp.y : 400));
+      this.blob.setDepth(130 + bp.y);
     }
 
-    for (let i = 0; i < this.reds.length; i++) {
-      const img = this.reds[i];
-      if (i >= redVis) {
-        img.setVisible(false);
-        continue;
-      }
-      const ang = i * 2.399963;
-      const ring = 0.08 + (i % 6) * 0.06;
-      const ex = Math.cos(ang) * Math.min(0.88, ring * 1.3);
-      const ey = this.level.endY - 6 + Math.sin(ang) * (16 + ring * 36);
-      const anchor = this.mode === 'run' ? project(ey, ex, cam) : null;
-      if (this.mode === 'run') {
+    const waves = this.world.waves.filter((w) => w.alive > 0.05).sort((a, b) => a.front - b.front);
+    let slot = 0;
+    for (const w of waves) {
+      const n = Math.max(3, Math.min(18, Math.ceil(Math.min(w.alive, 18))));
+      for (let i = 0; i < n && slot < this.reds.length; i++, slot++) {
+        const img = this.reds[slot];
+        const ang = i * 2.399963;
+        const ex = Math.cos(ang) * Math.min(0.72, 0.08 + (i % 5) * 0.07);
+        const ey = w.front + 16 + (i % 4) * 22;
+        const anchor = project(ey, ex, cam);
         if (!anchor.vis || anchor.t < 0) {
           img.setVisible(false);
           continue;
         }
+        const bob = Math.sin(this.clock * 8 + i) * 2 * anchor.scale;
         img.setVisible(true);
-        img.setPosition(anchor.x, anchor.y);
+        img.setPosition(anchor.x, anchor.y + bob);
         img.setScale(Math.max(0.16, anchor.scale * 0.9));
         img.setDepth(145 + anchor.y);
-      } else {
-        const spread = 150;
-        img.setVisible(true);
-        img.setPosition(VIEW.centerX + Math.cos(ang) * spread * (0.35 + (i % 5) * 0.08), 390 + Math.sin(ang) * 70);
-        img.setScale(0.85 * (0.75 + 0.25 * redFrac));
-        img.setDepth(1500 + (i % 9));
       }
     }
+    for (; slot < this.reds.length; slot++) this.reds[slot].setVisible(false);
 
     if (this.lead) {
       const lp = project(Math.min(this.level.endY - 8, this.frontY + 70), this.laneX, cam);
@@ -834,42 +783,21 @@ export class PlayScene extends Phaser.Scene {
     }
     this.countText.setVisible(true);
 
-    const fighting = this.mode === 'combat' && this.combat;
-    if (fighting) {
-      const pf = clamp(this.combat.player / this.combatStartP, 0, 1);
-      const ef = clamp(this.combat.enemy / this.combatStartE, 0, 1);
-      this.enemyText.setPosition(270, 176);
-      this.enemyText.setScale(1);
-      this.enemyText.setText(String(shown(this.combat.enemy)));
-      this.enemyText.setVisible(true);
-      this.foeCap.setVisible(true);
-      this.countText.setPosition(270, 800);
-      this.countText.setScale(this.pop);
-      this.countText.setText(String(shown(this.combat.player)));
-      this.youCap.setVisible(true);
-      g.fillStyle(0x4a1016, 0.45);
-      g.fillRoundedRect(70, 206, 400, 14, 7);
-      g.fillStyle(0xe23b3b, 1);
-      g.fillRoundedRect(70, 206, 400 * ef, 14, 7);
-      g.fillStyle(0x142033, 0.45);
-      g.fillRoundedRect(70, 836, 400, 14, 7);
-      g.fillStyle(0x3d7eff, 1);
-      g.fillRoundedRect(70, 836, 400 * pf, 14, 7);
-    } else {
-      this.youCap.setVisible(false);
-      this.foeCap.setVisible(false);
-      const fp = project(this.frontY - CROWD_DEPTH * 0.35, this.laneX, cam);
-      this.countText.setPosition(clamp(fp.x, 80, 460), clamp(fp.y, 150, 820));
-      this.countText.setScale(this.pop);
-      this.countText.setText(String(this.count));
-      const bp = project(this.level.endY + 16, 0, cam);
-      const showEnemy = bp.vis && bp.t > 0.02 && bp.t < 1;
-      this.enemyText.setVisible(showEnemy);
-      if (showEnemy) {
-        this.enemyText.setScale(Math.max(0.45, bp.scale));
-        this.enemyText.setPosition(bp.x, bp.y - Math.max(36, 80 * bp.scale));
-        this.enemyText.setText(String(this.level.enemy));
-      }
+    this.youCap.setVisible(false);
+    this.foeCap.setVisible(false);
+    const fp = project(this.frontY - CROWD_DEPTH * 0.35, this.laneX, cam);
+    this.countText.setPosition(clamp(fp.x, 80, 460), clamp(fp.y, 150, 820));
+    this.countText.setScale(this.pop);
+    this.countText.setText(String(shown(this.count)));
+
+    const threat = this.nearestThreat();
+    const tp = threat ? project(threat.front + (threat.boss ? 20 : 8), 0, cam) : null;
+    const showEnemy = !!(tp && tp.vis && tp.t > 0.02 && tp.t < 1);
+    this.enemyText.setVisible(showEnemy);
+    if (showEnemy) {
+      this.enemyText.setScale(Math.max(0.45, tp.scale));
+      this.enemyText.setPosition(tp.x, tp.y - Math.max(28, 64 * tp.scale));
+      this.enemyText.setText(String(shown(threat.alive)));
     }
 
     if (this.badFlash > 0) this.countText.setColor('#ffc1c7');

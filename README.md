@@ -1,6 +1,6 @@
 # Lane Rush
 
-An original portrait lane game. A cannon at the bottom of a walled sand lane fires a crowd of blue soldiers. Steer the crowd through multiplier gates, grab the yellow jet, and outnumber the red mob at the end.
+An original portrait lane game. A cannon at the bottom of a walled sand lane fires a crowd of blue soldiers. Steer the crowd through multiplier gates, grab the yellow jet, and fight red waves in real time until the boss.
 
 Built with [Phaser 3](https://phaser.io) (MIT). Art is drawn in code. No CDN and no external assets.
 
@@ -28,21 +28,23 @@ Open http://127.0.0.1:8765/
 
 ## Rules
 
-The crowd is one number. A gate changes that number once, not once per soldier. Multiply and add gates are purple (x2 gates are blue). Divide and subtract gates are red. The count caps at 20,000. One yellow jet sits on each lane and grants a bonus if you pass through it. At the end, your count and the red mob tick down 1:1. If you hit zero first you lose. If the mob does, you win. A tie (exact match) counts as a win. Six lanes, then a victory screen. Lose and you can retry. Nothing dead-ends.
+The crowd is one number. A gate changes that number once, not once per soldier. Multiply and add gates are purple (x2 gates are blue). Divide and subtract gates are red. The count caps at 20,000. One yellow jet sits on each lane and grants a bonus if you pass through it.
+
+Red waves march down the lane in several encounters. Blues and reds are on the field together. When they touch, each side loses soldiers at the same rate until one pack is gone. The cannon keeps firing and you keep steering through gates during a fight. Survivors continue. After the waves, a bigger boss waits at the end of the lane. Beating the boss clears the level. If your count hits zero, on a gate, a wave, or the boss, you lose and can retry. An even trade that empties both sides is a loss. Six lanes, then a victory screen.
 
 On-screen soldiers are capped around 100 sprites so big numbers stay fast. The number itself is the real count.
 
 ## Levels
 
-1. **First Dune** — Stack the x2 and x3. A red minus wipes a small squad. Enemy 100.
-2. **Split Sand** — The x4 into x3 chain beats flat bonuses. Enemy 480.
-3. **Switchback** — Weave across the lane into the larger multiplier each row. Fat plus gates are bait. Enemy 1,700.
-4. **Jetline** — Stay on the left-hand multipliers and take the jet. Without the jet the mob is bigger than you. Enemy 5,600.
-5. **Purple Stack** — Ride the tall x5 through x16 stack up to the cap, and do not exit through a red gate. Enemy 15,000.
-6. **Last Stand** — Only the full multiplier line plus the jet clears the Dune King. Enemy 19,000.
+1. **First Dune** — Stack the x2 and x3, take the jet, and cut the three small waves. A red divide dies in the stream. Boss 40.
+2. **Split Sand** — The x4 into x3 chain outlasts the marching packs. Boss 90.
+3. **Switchback** — Weave across the lane into the larger multiplier between waves. A fat plus is bait. Boss 160.
+4. **Jetline** — Stay on the left-hand multipliers and take the jet. The same gates without the jet die in the last wave. Boss 700.
+5. **Purple Stack** — Ride x5 through x16 up to the cap. The red exit is halved, then eaten by the wave before the boss. Boss 4,000.
+6. **Last Stand** — Only the full multiplier line plus the jet gets past the king's vanguard. Boss 4,050.
 
 ## Tests
 
-`npm test` checks gate math, the combat resolver, and that each level's good line beats its mob while a bad line does not. It also steers a keyboard-speed agent through every winning line.
+`npm test` checks gate math, live 1:1 contact, and that each level's good line beats its boss while a bad line dies in the wave stream. It steers a keyboard-speed agent through every line.
 
 `http://127.0.0.1:8765/?smoke=1` auto-plays level 1 with that winning line (for the headless check). It is not a menu cheat for later levels.
