@@ -1,0 +1,6 @@
+{
+  "framework": null,
+  "installCommand": "echo skip",
+  "buildCommand": "mkdir -p site/dist && cp index.html favicon.ico site/ && cp dist/game.js site/dist/game.js",
+  "outputDirectory": "site"
+}
