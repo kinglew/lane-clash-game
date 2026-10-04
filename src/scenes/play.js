@@ -73,6 +73,16 @@ export class PlayScene extends Phaser.Scene {
     this.lead = false;
     this.tracers = [];
     this.log = [];
+    this.shotPool = [];
+    for (let i = 0; i < 24; i++) {
+      this.shotPool.push({ on: false, x: 0, y: 0, vy: 0, life: 0, kind: 'shot' });
+    }
+    this.shotCursor = 0;
+    this.impacts = [];
+    for (let i = 0; i < 10; i++) this.impacts.push({ on: false, x: 0, y: 0, life: 0 });
+    this.impactCursor = 0;
+    this.muzzle = 0;
+    this.lunge = 0;
 
     this.ground = this.add.graphics().setDepth(0);
     this.fx = this.add.graphics().setDepth(1900);
@@ -123,6 +133,26 @@ export class PlayScene extends Phaser.Scene {
       strokeThickness: 4,
     }).setOrigin(0.5).setVisible(false);
     this.jetResolved = false;
+
+    const arm = (this.level.weapon && this.level.weapon.id) || 'shot';
+    const armName = arm === 'bolts' ? 'RAPID BOLTS' : arm === 'spread' ? 'SPREAD SHOT' : arm === 'ball' ? 'CANNONBALL' : 'SHOT';
+    this.weaponGfx = this.add.graphics();
+    this.weaponLabel = this.add.text(0, 0, armName, {
+      fontFamily: FONT,
+      fontSize: '15px',
+      fontStyle: 'bold',
+      color: '#102033',
+      stroke: '#d7f4ff',
+      strokeThickness: 3,
+    }).setOrigin(0.5).setVisible(false);
+    this.gunText = this.add.text(270, 860, 'SHOT', {
+      fontFamily: FONT,
+      fontSize: '15px',
+      fontStyle: 'bold',
+      color: '#d6ecff',
+      stroke: '#102038',
+      strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(4100);
 
     const hudStyle = {
       fontFamily: FONT,
@@ -234,6 +264,9 @@ export class PlayScene extends Phaser.Scene {
     if (!this.world.jet.resolved && this.level.proofWin.jet) {
       options.push({ y: this.world.jet.y, lane: this.level.jet.x });
     }
+    if (!this.world.pickup.resolved && this.level.proofWin.weapon) {
+      options.push({ y: this.world.pickup.y, lane: this.level.weapon.x });
+    }
     options.sort((a, b) => a.y - b.y);
     return options.length ? options[0].lane : this.laneX;
   }
@@ -263,6 +296,8 @@ export class PlayScene extends Phaser.Scene {
     this.pop += (1 - this.pop) * Math.min(1, dt * 9);
     this.badFlash = Math.max(0, this.badFlash - dt);
     this.recoil = Math.max(0, this.recoil - dt * 7);
+    this.muzzle = Math.max(0, this.muzzle - dt * 7);
+    this.lunge = Math.max(0, this.lunge - dt * 4.5);
     if (this.blurb.alpha > 0 && this.clock > 2.4) {
       this.blurb.alpha = Math.max(0, this.blurb.alpha - dt * 1.4);
     }
@@ -304,10 +339,9 @@ export class PlayScene extends Phaser.Scene {
     this.syncWorld();
     for (const g of ev.gates) this.juiceGate(g);
     if (ev.jet) this.juiceJet(ev.jet);
-    if (ev.clashes.length) {
-      this.sfx.ensure();
-      this.sfx.clash(this.time.now);
-    }
+    if (ev.weapon) this.juiceWeapon(ev.weapon);
+    this.juiceAttacks(ev.attacks);
+    this.stepShots(dt);
 
     this.fireCd -= dt;
     if (this.fireCd <= 0 && this.count > 0) {
@@ -355,6 +389,79 @@ export class PlayScene extends Phaser.Scene {
     const p = project(row.y, laneCenter(g.gate, row.gates.length), this.camY());
     this.spawnFloater(p.x, p.y, opLabel(op), op.good ? '#fff6cf' : '#ffd4dc');
     this.log.push({ type: 'gate', index: g.index, gate: g.gate, count: shown(g.count) });
+  }
+
+  juiceWeapon(ev) {
+    this.log.push({ type: 'weapon', hit: ev.hit, id: ev.id, count: shown(ev.count) });
+    if (!ev.hit) return;
+    this.pop = 1.45;
+    this.sfx.weapon();
+    const p = project(this.level.weapon.y, this.level.weapon.x, this.camY());
+    this.spawnFloater(p.x, p.y - 16, ev.name.toUpperCase(), '#b9ecff');
+  }
+
+  juiceAttacks(attacks) {
+    if (!attacks || !attacks.length) return;
+    this.sfx.ensure();
+    let swung = false;
+    for (let i = 0; i < attacks.length; i++) {
+      const a = attacks[i];
+      if (a.side === 'blue' && a.shots > 0) {
+        this.muzzle = 1;
+        this.spawnVolley(a);
+        this.sfx.attack(a.weapon, this.time.now);
+        if (a.killed > 0) this.spawnImpact(a.front, this.laneX);
+      } else if (a.side === 'red' && a.shots > 0) {
+        swung = true;
+        if (a.killed > 0) this.spawnImpact(this.frontY - 12, this.laneX);
+      }
+    }
+    if (swung) {
+      this.lunge = 1;
+      this.sfx.attack('swing', this.time.now);
+    }
+  }
+
+  spawnVolley(a) {
+    const kind = a.weapon;
+    const n = kind === 'ball' ? 1 : kind === 'spread' ? 3 : kind === 'bolts' ? 5 : 2;
+    const speed = kind === 'ball' ? 520 : kind === 'bolts' ? 980 : 760;
+    for (let i = 0; i < n; i++) {
+      const s = this.shotPool[this.shotCursor];
+      this.shotCursor = (this.shotCursor + 1) % this.shotPool.length;
+      s.on = true;
+      s.kind = kind;
+      const fan = kind === 'spread' ? (i - 1) * 0.16 : (i - (n - 1) / 2) * 0.045;
+      s.x = this.laneX + fan;
+      s.y = this.frontY - 10 - i * 8;
+      s.vy = speed;
+      s.life = kind === 'ball' ? 0.28 : 0.16;
+    }
+  }
+
+  spawnImpact(y, x) {
+    const hit = this.impacts[this.impactCursor];
+    this.impactCursor = (this.impactCursor + 1) % this.impacts.length;
+    hit.on = true;
+    hit.x = x;
+    hit.y = y;
+    hit.life = 0.12;
+  }
+
+  stepShots(dt) {
+    for (let i = 0; i < this.shotPool.length; i++) {
+      const s = this.shotPool[i];
+      if (!s.on) continue;
+      s.y += s.vy * dt;
+      s.life -= dt;
+      if (s.life <= 0) s.on = false;
+    }
+    for (let i = 0; i < this.impacts.length; i++) {
+      const hit = this.impacts[i];
+      if (!hit.on) continue;
+      hit.life -= dt;
+      if (hit.life <= 0) hit.on = false;
+    }
   }
 
   juiceJet(ev) {
@@ -493,6 +600,7 @@ export class PlayScene extends Phaser.Scene {
     this.drawGround(cam);
     this.drawGates(cam);
     this.drawJet(cam);
+    this.drawWeapon(cam);
     this.drawActors(cam);
     this.drawCannon(cam);
     this.drawFx(cam);
@@ -676,6 +784,46 @@ export class PlayScene extends Phaser.Scene {
     this.jetLabel.setDepth(121 + p.y);
   }
 
+  drawWeapon(cam) {
+    const drop = this.level.weapon;
+    this.weaponGfx.clear();
+    if (!drop || this.world.pickup.resolved) {
+      this.weaponLabel.setVisible(false);
+      return;
+    }
+    const p = project(drop.y, drop.x, cam);
+    const show = p.vis && p.t > 0;
+    if (!show) {
+      this.weaponLabel.setVisible(false);
+      return;
+    }
+    const bob = Math.sin(this.clock * 5) * 3 * p.scale;
+    const s = Math.max(0.35, p.scale);
+    this.weaponGfx.setDepth(120 + p.y);
+    this.weaponGfx.fillStyle(0x000000, 0.2);
+    this.weaponGfx.fillEllipse(p.x, p.y + 16 * s + bob, 36 * s, 10 * s);
+    this.weaponGfx.fillStyle(0x16324a, 1);
+    this.weaponGfx.fillRoundedRect(p.x - 16 * s, p.y - 6 * s + bob, 32 * s, 22 * s, 4 * s);
+    this.weaponGfx.fillStyle(0x3ec6ff, 1);
+    if (drop.id === 'ball') {
+      this.weaponGfx.fillCircle(p.x, p.y - 8 * s + bob, 9 * s);
+      this.weaponGfx.fillStyle(0xffb15a, 1);
+      this.weaponGfx.fillCircle(p.x - 2 * s, p.y - 10 * s + bob, 4 * s);
+    } else if (drop.id === 'spread') {
+      for (const side of [-1, 0, 1]) {
+        this.weaponGfx.fillCircle(p.x + side * 8 * s, p.y - 10 * s + bob, 3.2 * s);
+      }
+    } else {
+      this.weaponGfx.fillRect(p.x - 10 * s, p.y - 12 * s + bob, 20 * s, 3 * s);
+      this.weaponGfx.fillRect(p.x - 7 * s, p.y - 7 * s + bob, 16 * s, 3 * s);
+      this.weaponGfx.fillRect(p.x - 4 * s, p.y - 2 * s + bob, 12 * s, 3 * s);
+    }
+    this.weaponLabel.setVisible(true);
+    this.weaponLabel.setPosition(p.x, p.y + 18 * s + bob);
+    this.weaponLabel.setScale(Math.max(0.45, s));
+    this.weaponLabel.setDepth(122 + p.y);
+  }
+
   drawActors(cam) {
     const blueVis = this.count <= 0.001 ? 0 : Math.min(MAX_BLUE, Math.max(1, Math.ceil(Math.min(this.count, MAX_BLUE))));
 
@@ -692,8 +840,9 @@ export class PlayScene extends Phaser.Scene {
         continue;
       }
       const bob = Math.sin(this.clock * 9 + i * 0.7) * 3 * p.scale;
+      const kick = this.muzzle * 5 * p.scale;
       img.setVisible(true);
-      img.setPosition(p.x, p.y + bob);
+      img.setPosition(p.x, p.y + bob - kick);
       img.setScale(Math.max(0.18, p.scale * 0.95));
       img.setDepth(140 + p.y);
       img.setRotation((slot.spin) * 0.15);
@@ -708,7 +857,7 @@ export class PlayScene extends Phaser.Scene {
     if (blobShow) {
       const sc = bp.scale * grow * (0.72 + 0.28 * frac);
       const pulse = 1 + Math.sin(this.clock * 3) * 0.03;
-      this.blob.setPosition(bp.x, bp.y);
+      this.blob.setPosition(bp.x, bp.y + this.lunge * 10 * bp.scale);
       this.blob.setScale(Math.max(0.2, sc * pulse));
       this.blob.setDepth(130 + bp.y);
     }
@@ -721,7 +870,7 @@ export class PlayScene extends Phaser.Scene {
         const img = this.reds[slot];
         const ang = i * 2.399963;
         const ex = Math.cos(ang) * Math.min(0.72, 0.08 + (i % 5) * 0.07);
-        const ey = w.front + 16 + (i % 4) * 22;
+        const ey = w.front + 16 + (i % 4) * 22 - this.lunge * 26;
         const anchor = project(ey, ex, cam);
         if (!anchor.vis || anchor.t < 0) {
           img.setVisible(false);
@@ -731,6 +880,7 @@ export class PlayScene extends Phaser.Scene {
         img.setVisible(true);
         img.setPosition(anchor.x, anchor.y + bob);
         img.setScale(Math.max(0.16, anchor.scale * 0.9));
+        img.setRotation(this.lunge * 0.45);
         img.setDepth(145 + anchor.y);
       }
     }
@@ -758,10 +908,48 @@ export class PlayScene extends Phaser.Scene {
     const g = this.fx;
     g.clear();
     g.fillStyle(0xd7ecff, 0.9);
-    for (const t of this.tracers) {
-      const p = project(t.y, t.x, cam);
+    for (let i = 0; i < this.tracers.length; i++) {
+      const tr = this.tracers[i];
+      const p = project(tr.y, tr.x, cam);
       if (!p.vis) continue;
       g.fillCircle(p.x, p.y, Math.max(1.5, 4 * p.scale));
+    }
+    if (this.muzzle > 0) {
+      const m = project(this.frontY - 6, this.laneX, cam);
+      if (m.vis) {
+        g.fillStyle(0xfff4c4, 0.35 + this.muzzle * 0.5);
+        g.fillCircle(m.x, m.y, Math.max(4, (10 + this.muzzle * 8) * m.scale));
+      }
+    }
+    for (let i = 0; i < this.shotPool.length; i++) {
+      const s = this.shotPool[i];
+      if (!s.on) continue;
+      const p = project(s.y, s.x, cam);
+      if (!p.vis) continue;
+      if (s.kind === 'ball') {
+        g.fillStyle(0xfff1c9, 0.95);
+        g.fillCircle(p.x, p.y, Math.max(4, 9 * p.scale));
+        g.fillStyle(0xff7a32, 1);
+        g.fillCircle(p.x, p.y, Math.max(2.5, 6 * p.scale));
+      } else if (s.kind === 'bolts') {
+        g.fillStyle(0xfff3a0, 1);
+        g.fillRect(p.x - 1.5, p.y - Math.max(6, 14 * p.scale), 3, Math.max(8, 16 * p.scale));
+      } else if (s.kind === 'spread') {
+        g.fillStyle(0x8ef0c2, 1);
+        g.fillCircle(p.x, p.y, Math.max(2, 4.5 * p.scale));
+      } else {
+        g.fillStyle(0xd7ecff, 1);
+        g.fillCircle(p.x, p.y, Math.max(1.6, 3.4 * p.scale));
+      }
+    }
+    for (let i = 0; i < this.impacts.length; i++) {
+      const hit = this.impacts[i];
+      if (!hit.on) continue;
+      const p = project(hit.y, hit.x, cam);
+      if (!p.vis) continue;
+      const k = Math.max(0, hit.life / 0.12);
+      g.fillStyle(0xfff6d4, 0.85 * k);
+      g.fillCircle(p.x, p.y, Math.max(3, (16 - k * 6) * p.scale));
     }
   }
 
@@ -779,9 +967,11 @@ export class PlayScene extends Phaser.Scene {
       this.enemyText.setVisible(false);
       this.youCap.setVisible(false);
       this.foeCap.setVisible(false);
+      this.gunText.setVisible(false);
       return;
     }
     this.countText.setVisible(true);
+    this.gunText.setVisible(true);
 
     this.youCap.setVisible(false);
     this.foeCap.setVisible(false);
@@ -789,6 +979,9 @@ export class PlayScene extends Phaser.Scene {
     this.countText.setPosition(clamp(fp.x, 80, 460), clamp(fp.y, 150, 820));
     this.countText.setScale(this.pop);
     this.countText.setText(String(shown(this.count)));
+    const gun = project(this.cannonY() + 8, this.laneX, cam);
+    this.gunText.setText(this.world.weapon.name.toUpperCase());
+    this.gunText.setPosition(clamp(gun.x, 80, 460), Math.min(VIEW.height - 28, gun.y + 8));
 
     const threat = this.nearestThreat();
     const tp = threat ? project(threat.front + (threat.boss ? 20 : 8), 0, cam) : null;

@@ -56,6 +56,24 @@ class Sfx {
     } catch (err) { /* audio backend missing */ }
   }
 
+  weapon() {
+    this.ensure();
+    this.tone(520, 0.06, 'square', 0.04, 0);
+    this.tone(780, 0.09, 'square', 0.035, 0.05);
+  }
+
+  attack(kind, nowMs) {
+    if (!this.ctx || this.muted) return;
+    const gap = kind === 'bolts' ? 70 : kind === 'swing' ? 90 : 110;
+    if (nowMs - (this.lastAttack || 0) < gap) return;
+    this.lastAttack = nowMs;
+    if (kind === 'bolts') this.tone(880, 0.03, 'square', 0.012, 0, 420);
+    else if (kind === 'spread') this.tone(640, 0.04, 'square', 0.014, 0, 280);
+    else if (kind === 'ball') this.tone(140, 0.08, 'square', 0.02, 0, 70);
+    else if (kind === 'swing') this.tone(210, 0.05, 'square', 0.012, 0, 90);
+    else this.tone(740, 0.03, 'square', 0.011, 0, 360);
+  }
+
   clash(nowMs) {
     if (!this.ctx || this.muted) return;
     if (nowMs - (this.lastClash || 0) < 110) return;

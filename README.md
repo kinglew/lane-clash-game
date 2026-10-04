@@ -1,6 +1,6 @@
 # Lane Rush
 
-An original portrait lane game. A cannon at the bottom of a walled sand lane fires a crowd of blue soldiers. Steer the crowd through multiplier gates, grab the yellow jet, and fight red waves in real time until the boss.
+An original portrait lane game. A cannon at the bottom of a walled sand lane fires a crowd of blue soldiers. Steer through multiplier gates, grab the yellow jet and a weapon pickup, and fight red waves in real time until the boss.
 
 Built with [Phaser 3](https://phaser.io) (MIT). Art is drawn in code. No CDN and no external assets.
 
@@ -30,7 +30,9 @@ Open http://127.0.0.1:8765/
 
 The crowd is one number. A gate changes that number once, not once per soldier. Multiply and add gates are purple (x2 gates are blue). Divide and subtract gates are red. The count caps at 20,000. One yellow jet sits on each lane and grants a bonus if you pass through it.
 
-Red waves march down the lane in several encounters. Blues and reds are on the field together. When they touch, each side loses soldiers at the same rate until one pack is gone. The cannon keeps firing and you keep steering through gates during a fight. Survivors continue. After the waves, a bigger boss waits at the end of the lane. Beating the boss clears the level. If your count hits zero, on a gate, a wave, or the boss, you lose and can retry. An even trade that empties both sides is a loss. Six lanes, then a victory screen.
+The crowd starts with a basic Shot. Three pickups sit off the safest gate line: Rapid Bolts (fast, one target), Spread Shot (one shot hits three), and Cannonball (slow, heavy). Picking one up replaces the current weapon. Its name stays by the cannon.
+
+Red waves march down the lane. When a pack is in range, blues fire the equipped weapon and reds lunge back. Each landed shot or swing removes soldiers — damage, fire rate, and pierce decide the trade, so a stronger weapon lets a smaller crowd beat a larger wave. The cannon still fires new soldiers on its own. The lane never pauses. After the waves, a boss waits at the end. Beating the boss clears the level. If your count hits zero you can retry. An even trade that empties both sides is a loss. Six lanes, then a victory screen.
 
 On-screen soldiers are capped around 100 sprites so big numbers stay fast. The number itself is the real count.
 
@@ -45,6 +47,6 @@ On-screen soldiers are capped around 100 sprites so big numbers stay fast. The n
 
 ## Tests
 
-`npm test` checks gate math, live 1:1 contact, and that each level's good line beats its boss while a bad line dies in the wave stream. It steers a keyboard-speed agent through every line.
+`npm test` checks gate math, weapon hits, and that each level's good line plus its weapon beats the boss while a bad line that skips the weapon dies in a wave.
 
 `http://127.0.0.1:8765/?smoke=1` auto-plays level 1 with that winning line (for the headless check). It is not a menu cheat for later levels.

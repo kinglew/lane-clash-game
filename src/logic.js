@@ -66,25 +66,45 @@ export function justCrossed(prevY, nextY, lineY) {
   return prevY < lineY && nextY >= lineY;
 }
 
-// Real-time contact. Formations that overlap lose soldiers 1:1.
-// Small packs resolve in about a second. A large boss grinds for ~2.4s
-// of continuous contact instead of a separate countdown phase.
+// Real-time weapon combat. Counts fall only when a shot or a swing lands.
+// The lane never pauses for a separate countdown.
 
-export function contactRate(player, enemy) {
-  const smaller = Math.min(Math.max(0, player), Math.max(0, enemy));
-  if (smaller <= 0) return 0;
-  return Math.max(16, smaller / 2.4);
+export const WEAPONS = {
+  shot: { id: 'shot', name: 'Shot', damage: 1, rate: 2, pierce: 1 },
+  bolts: { id: 'bolts', name: 'Rapid Bolts', damage: 1, rate: 5, pierce: 1 },
+  spread: { id: 'spread', name: 'Spread Shot', damage: 1, rate: 2, pierce: 3 },
+  ball: { id: 'ball', name: 'Cannonball', damage: 4, rate: 1, pierce: 1 },
+};
+
+export const RED_ATTACK = { damage: 1, rate: 2, pierce: 1 };
+
+export function weaponById(id) {
+  return WEAPONS[id] || WEAPONS.shot;
 }
 
-export function clashStep(player, enemy, dt, rate) {
-  const p = Math.max(0, Number(player) || 0);
-  const e = Math.max(0, Number(enemy) || 0);
-  if (p <= 0 || e <= 0 || !(dt > 0)) return { player: p, enemy: e, killed: 0 };
-  const speed = rate > 0 ? rate : contactRate(p, e);
-  let kill = speed * dt;
-  if (kill > p) kill = p;
-  if (kill > e) kill = e;
-  return { player: p - kill, enemy: e - kill, killed: kill };
+export function weaponPower(weapon) {
+  const w = weapon || WEAPONS.shot;
+  return w.damage * w.rate * Math.max(1, w.pierce);
+}
+
+/** How many discrete shots a formation gets this step. Leftover heat is kept. */
+export function fireTicks(count, rate, dt, acc) {
+  const c = Math.max(0, Number(count) || 0);
+  const r = Math.max(0, Number(rate) || 0);
+  const step = Math.max(0, Number(dt) || 0);
+  let next = (Number(acc) || 0) + c * r * step;
+  if (!Number.isFinite(next) || next < 0) next = 0;
+  const shots = Math.floor(next);
+  return { shots, acc: next - shots };
+}
+
+/** One shot removes `damage` from each of `pierce` enemies, capped by who's left. */
+export function resolveHits(shots, damage, pierce, alive) {
+  const n = Math.max(0, Math.floor(Number(shots) || 0));
+  const per = Math.max(0, Number(damage) || 0) * Math.max(1, Math.floor(Number(pierce) || 1));
+  const hp = Math.max(0, Math.floor(Number(alive) || 0));
+  const killed = Math.min(hp, n * per);
+  return { shots: n, killed, left: hp - killed };
 }
 
 export const ENEMY_MARCH = 130;
@@ -93,6 +113,7 @@ export const WAVE_DEPTH = 150;
 export const BOSS_DEPTH = 210;
 export const ENGAGE = 250;
 export const BOSS_ENGAGE = 260;
+export const SHOT_REACH = 26;
 
 function yTouch(blueFront, redFront, redDepth) {
   const blueBack = blueFront - CROWD_DEPTH;
@@ -100,11 +121,20 @@ function yTouch(blueFront, redFront, redDepth) {
   return redFront <= blueFront + 26 && redTail >= blueBack - 10;
 }
 
+function inShotRange(blueFront, redFront, redDepth) {
+  const blueBack = blueFront - CROWD_DEPTH;
+  const redTail = redFront + redDepth;
+  return redFront <= blueFront + SHOT_REACH && redTail >= blueBack - 10;
+}
+
 export function createWorld(level, frontY = START_FRONT) {
+  const pickup = level.weapon || null;
   return {
     count: level.start,
     frontY,
     laneX: 0,
+    weapon: weaponById('shot'),
+    blueAcc: 0,
     rows: level.rows.map((row, index) => ({
       y: row.y,
       gates: row.gates,
@@ -120,6 +150,21 @@ export function createWorld(level, frontY = START_FRONT) {
       resolved: false,
       taken: false,
     },
+    pickup: pickup ? {
+      y: pickup.y,
+      x: pickup.x,
+      radius: pickup.radius,
+      id: pickup.id,
+      resolved: false,
+      taken: false,
+    } : {
+      y: -1,
+      x: 0,
+      radius: 0,
+      id: 'shot',
+      resolved: true,
+      taken: false,
+    },
     waves: (level.waves || []).map((w, i) => ({
       id: i,
       y0: w.y,
@@ -128,6 +173,7 @@ export function createWorld(level, frontY = START_FRONT) {
       alive: w.count,
       depth: WAVE_DEPTH,
       boss: false,
+      redAcc: 0,
     })),
     boss: {
       y0: level.boss.y,
@@ -137,6 +183,7 @@ export function createWorld(level, frontY = START_FRONT) {
       depth: BOSS_DEPTH,
       boss: true,
       name: level.boss.name || level.enemyName || 'Boss',
+      redAcc: 0,
     },
     won: false,
     lost: false,
@@ -146,34 +193,30 @@ export function createWorld(level, frontY = START_FRONT) {
 }
 
 function marchUnit(unit, world, step) {
-  if (unit.alive <= 0.001) return;
+  if (unit.alive <= 0) return;
   const engage = unit.boss ? BOSS_ENGAGE : ENGAGE;
   const see = world.frontY > unit.front - engage || unit.front < unit.y0 - 0.5;
   if (!see) return;
   const hit = yTouch(world.frontY, unit.front, unit.depth);
   const march = (unit.boss ? ENEMY_MARCH * 0.5 : ENEMY_MARCH) * step;
-  if (hit) {
-    // Stay pressed into the blue front until one side is gone.
-    unit.front = world.frontY - 8;
-  } else {
-    unit.front -= march;
-  }
+  if (hit) unit.front = world.frontY - 8;
+  else unit.front -= march;
 }
 
 /**
  * Advance the lane by dt seconds. laneX is the crowd's steered position.
  * Mutates world. Returns the events that happened this step.
- * The lane never pauses: gates, marching waves, and contact all share one clock.
+ * Gates, pickups, marching waves, and weapon hits share one clock.
  */
 export function stepWorld(world, dt, laneX) {
-  const events = { gates: [], jet: null, clashes: [] };
+  const events = { gates: [], jet: null, weapon: null, attacks: [] };
   if (world.won || world.lost) return events;
   const step = Math.max(0, Number(dt) || 0);
   if (step === 0) return events;
   world.laneX = Math.max(-1, Math.min(1, Number(laneX) || 0));
 
   const units = world.waves.concat([world.boss]);
-  const touching = units.some((u) => u.alive > 0.001 && yTouch(world.frontY, u.front, u.depth));
+  const touching = units.some((u) => u.alive > 0 && yTouch(world.frontY, u.front, u.depth));
   world.pushing = touching;
   const speed = touching ? RUN_SPEED * PUSH_MULT : RUN_SPEED;
   const prev = world.frontY;
@@ -186,6 +229,7 @@ export function stepWorld(world, dt, laneX) {
     if (!row.triggered) pending.push({ y: row.y, type: 'row', row });
   }
   if (!world.jet.resolved) pending.push({ y: world.jet.y, type: 'jet' });
+  if (!world.pickup.resolved) pending.push({ y: world.pickup.y, type: 'weapon' });
   pending.sort((a, b) => a.y - b.y);
   for (const e of pending) {
     if (!(prev < e.y && world.frontY >= e.y)) continue;
@@ -201,59 +245,87 @@ export function stepWorld(world, dt, laneX) {
         world.diedAt = 'gate';
         return events;
       }
-    } else {
+    } else if (e.type === 'jet') {
       world.jet.resolved = true;
       const hit = Math.abs(world.laneX - world.jet.x) <= world.jet.radius + 1e-9;
       world.jet.taken = hit;
       if (hit) world.count = applyOp(world.count, world.jet.op);
       events.jet = { hit, count: world.count };
+    } else {
+      world.pickup.resolved = true;
+      const hit = Math.abs(world.laneX - world.pickup.x) <= world.pickup.radius + 1e-9;
+      world.pickup.taken = hit;
+      if (hit) {
+        world.weapon = weaponById(world.pickup.id);
+        world.blueAcc = 0;
+      }
+      events.weapon = { hit, id: world.weapon.id, name: world.weapon.name, count: world.count };
     }
   }
 
-  for (const u of units) {
-    if (!yTouch(world.frontY, u.front, u.depth)) u.engageRate = 0;
-  }
-  const living = units.filter((u) => u.alive > 0.001 && yTouch(world.frontY, u.front, u.depth));
+  const living = units.filter((u) => u.alive > 0 && inShotRange(world.frontY, u.front, u.depth));
   living.sort((a, b) => a.front - b.front || (a.boss === b.boss ? 0 : a.boss ? 1 : -1));
-  // One contact at a time so a wave is finished before the boss joins the pile.
-  // The cancel rate locks at first touch so a big pack finishes in about 2.4s
-  // instead of shrinking exponentially.
-  for (const u of living.slice(0, 1)) {
-    if (world.count <= 0) break;
-    if (!(u.engageRate > 0)) u.engageRate = contactRate(world.count, u.alive);
-    const res = clashStep(world.count, u.alive, step, u.engageRate);
-    if (res.killed <= 0) continue;
-    world.count = res.player;
-    u.alive = res.enemy;
-    events.clashes.push({
-      boss: !!u.boss,
-      id: u.boss ? 'boss' : u.id,
-      killed: res.killed,
-      left: u.alive,
-      count: world.count,
-    });
-    if (world.count <= 0.001) {
+  const target = living[0];
+  if (!target || world.count <= 0) {
+    world.blueAcc = 0;
+  } else {
+    const wpn = world.weapon;
+    const melee = yTouch(world.frontY, target.front, target.depth);
+    const fired = fireTicks(world.count, wpn.rate, step, world.blueAcc);
+    world.blueAcc = fired.acc;
+    const swung = melee
+      ? fireTicks(target.alive, RED_ATTACK.rate, step, target.redAcc || 0)
+      : { shots: 0, acc: target.redAcc || 0 };
+    target.redAcc = swung.acc;
+    // Both sides use this step's full ranks, so a landed hit is what drops the count.
+    const blueHit = resolveHits(fired.shots, wpn.damage, wpn.pierce, target.alive);
+    const redHit = resolveHits(swung.shots, RED_ATTACK.damage, RED_ATTACK.pierce, world.count);
+    target.alive = blueHit.left;
+    world.count = redHit.left;
+    if (blueHit.shots > 0) {
+      events.attacks.push({
+        side: 'blue',
+        shots: blueHit.shots,
+        killed: blueHit.killed,
+        weapon: wpn.id,
+        boss: !!target.boss,
+        id: target.boss ? 'boss' : target.id,
+        front: target.front,
+      });
+    }
+    if (redHit.shots > 0) {
+      events.attacks.push({
+        side: 'red',
+        shots: redHit.shots,
+        killed: redHit.killed,
+        weapon: 'swing',
+        boss: !!target.boss,
+        id: target.boss ? 'boss' : target.id,
+        front: target.front,
+      });
+    }
+    if (world.count <= 0) {
       world.count = 0;
       world.lost = true;
-      world.diedAt = u.boss ? 'boss' : 'wave';
+      world.diedAt = target.boss ? 'boss' : 'wave';
       return events;
     }
-    if (u.boss && u.alive <= 0.001) {
-      u.alive = 0;
+    if (target.boss && target.alive <= 0) {
+      target.alive = 0;
       world.won = true;
       return events;
     }
   }
 
-  if (world.boss.alive <= 0.001 && world.count > 0) {
+  if (world.boss.alive <= 0 && world.count > 0) {
     world.boss.alive = 0;
     world.won = true;
   }
   return events;
 }
 
-/** Steer a keyboard-speed crowd through gate choices and run the real-time lane. */
-export function playThrough(level, indices, wantJet, dt = 1 / 90) {
+/** Steer a keyboard-speed crowd through gates, the jet, and a weapon pickup. */
+export function playThrough(level, indices, wantJet, wantWeapon = false, dt = 1 / 90) {
   const world = createWorld(level, START_FRONT);
   let lane = 0;
   let guard = 0;
@@ -269,6 +341,7 @@ export function playThrough(level, indices, wantJet, dt = 1 / 90) {
       }
     }
     if (!world.jet.resolved && wantJet) options.push({ y: world.jet.y, lane: level.jet.x });
+    if (!world.pickup.resolved && wantWeapon) options.push({ y: world.pickup.y, lane: level.weapon.x });
     options.sort((a, b) => a.y - b.y);
     let target = options.length ? options[0].lane : lane;
     if (target < -LANE_CLAMP) target = -LANE_CLAMP;
