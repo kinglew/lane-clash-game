@@ -77,6 +77,25 @@ class Sfx {
     else this.tone(740, 0.03, 'square', 0.011, 0, 360);
   }
 
+  /** Boss wind-up warning: rising siren, pitch per move. */
+  tell(kind) {
+    if (!this.ctx || this.muted) return;
+    const base = kind === 'charge' ? 260 : kind === 'volley' ? 420 : 180;
+    this.tone(base, 0.18, 'sawtooth', 0.03, 0, base * 2.2);
+    this.tone(base * 1.5, 0.12, 'square', 0.015, 0.14, base * 2.6);
+  }
+
+  /** Boss special landing: heavy thump if it hit, a whoosh if dodged. */
+  boom(kind, hit) {
+    if (!this.ctx || this.muted) return;
+    if (hit) {
+      this.tone(kind === 'volley' ? 120 : 70, 0.28, 'square', 0.05, 0, 40);
+      this.tone(52, 0.36, 'sawtooth', 0.035, 0.03, 40);
+    } else {
+      this.tone(520, 0.14, 'triangle', 0.025, 0, 160);
+    }
+  }
+
   clash(nowMs) {
     if (!this.ctx || this.muted) return;
     if (nowMs - (this.lastClash || 0) < 110) return;

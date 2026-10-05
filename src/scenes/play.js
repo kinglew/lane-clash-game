@@ -9,6 +9,8 @@ import {
   weaponById,
   switchWeapon,
   heldWeapon,
+  autoPilot,
+  BOSS_MOVES,
 } from '../logic.js';
 import {
   FONT,
@@ -27,6 +29,19 @@ import {
 import { ensureArt, paintBanner, paintCannon } from '../art.js';
 import { createSfx } from '../sfx.js';
 import { setStatus, touchLane } from '../status.js';
+
+// Per-weapon look: projectile color, core color, size, trail length (px of world y),
+// muzzle flash color, and how hard a landed hit shakes the camera.
+const WSTYLE = {
+  shot: { color: 0xd7ecff, core: 0xffffff, size: 3.4, trail: 26, flash: 0xeaf6ff, shake: 0 },
+  bolts: { color: 0xffd84a, core: 0xfff8d0, size: 2.4, trail: 44, flash: 0xffe58a, shake: 0 },
+  spread: { color: 0x5fe8a8, core: 0xd8fff0, size: 4.4, trail: 22, flash: 0x9ff5cc, shake: 0 },
+  ball: { color: 0xff7a32, core: 0xfff1c9, size: 8.5, trail: 40, flash: 0xffb066, shake: 0.006 },
+  needle: { color: 0xbff2ff, core: 0xffffff, size: 1.6, trail: 52, flash: 0xd8f8ff, shake: 0 },
+  lance: { color: 0xfff0a8, core: 0xffffff, size: 3.2, trail: 60, flash: 0xfff4c8, shake: 0.002 },
+  mortar: { color: 0xa24bdf, core: 0xf3d0ff, size: 11, trail: 34, flash: 0xd9a2ff, shake: 0.009 },
+};
+const MOVE_COLOR = { slam: 0xff5a3a, volley: 0xffb02e, charge: 0xff2a5a };
 
 function clamp(v, a, b) {
   return Math.max(a, Math.min(b, v));
@@ -76,16 +91,30 @@ export class PlayScene extends Phaser.Scene {
     this.lead = false;
     this.tracers = [];
     this.log = [];
+    // Fixed-size pools. Nothing below allocates per frame.
     this.shotPool = [];
-    for (let i = 0; i < 24; i++) {
-      this.shotPool.push({ on: false, x: 0, y: 0, vy: 0, life: 0, kind: 'shot' });
+    for (let i = 0; i < 40; i++) {
+      this.shotPool.push({ on: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, kind: 'shot', arc: 0 });
     }
     this.shotCursor = 0;
     this.impacts = [];
-    for (let i = 0; i < 10; i++) this.impacts.push({ on: false, x: 0, y: 0, life: 0 });
+    for (let i = 0; i < 16; i++) this.impacts.push({ on: false, x: 0, y: 0, life: 0, max: 0.14, kind: 'shot', big: false });
     this.impactCursor = 0;
+    this.sparks = [];
+    for (let i = 0; i < 48; i++) this.sparks.push({ on: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 0.3, color: 0xffffff });
+    this.sparkCursor = 0;
+    this.waves3 = [];
+    for (let i = 0; i < 6; i++) this.waves3.push({ on: false, x: 0, y: 0, r: 0.3, life: 0, max: 0.45, color: 0xff5a3a });
+    this.waveCursor = 0;
+    this.bossShots = [];
+    for (let i = 0; i < 12; i++) this.bossShots.push({ on: false, x0: 0, y0: 0, x1: 0, y1: 0, t: 0, dur: 1 });
+    this.bossShotCursor = 0;
     this.muzzle = 0;
+    this.muzzleColor = 0xfff4c4;
     this.lunge = 0;
+    this.swingT = 0;
+    this.shakeCd = 0;
+    this.bossAnim = { rise: 0, dash: 0, slam: 0 };
 
     this.ground = this.add.graphics().setDepth(0);
     this.fx = this.add.graphics().setDepth(1900);
@@ -174,7 +203,8 @@ export class PlayScene extends Phaser.Scene {
       this.midMarks.push({
         wave,
         img: this.add.image(0, 0, 'lr-blob').setOrigin(0.5, 0.72).setVisible(false),
-        label: this.add.text(0, 0, wave.name.toUpperCase(), {
+        anim: { rise: 0, dash: 0, slam: 0 },
+        label: this.add.text(0, 0, wave.name.toUpperCase() + '  ARMOR ' + wave.armor, {
           fontFamily: FONT, fontSize: '18px', fontStyle: 'bold', color: '#fff0ee',
           stroke: '#5a0a12', strokeThickness: 4,
         }).setOrigin(0.5).setDepth(4100).setVisible(false),
@@ -285,26 +315,28 @@ export class PlayScene extends Phaser.Scene {
     this.muteText.setText(muted ? 'MUTED' : 'SFX');
   }
 
-  smokeTarget() {
-    const options = [];
-    for (const row of this.world.rows) {
-      if (row.triggered) continue;
-      const idx = this.level.proofWin.gates[row.index];
-      options.push({ y: row.y, lane: laneCenter(idx, row.gates.length) });
+  smokePlan() {
+    if (!this._smokePlan) {
+      this._smokePlan = {
+        gates: this.level.proofWin.gates,
+        jet: !!this.level.proofWin.jet,
+        weapon: !!this.level.proofWin.weapon,
+        drops: true,
+        dodge: true,
+        smart: true,
+      };
     }
-    if (!this.world.jet.resolved && this.level.proofWin.jet) {
-      options.push({ y: this.world.jet.y, lane: this.level.jet.x });
-    }
-    if (this.world.pad && !this.world.pad.resolved && this.level.proofWin.weapon) {
-      options.push({ y: this.world.pad.y, lane: this.level.weapon.x });
-    }
-    options.sort((a, b) => a.y - b.y);
-    return options.length ? options[0].lane : this.laneX;
+    return this._smokePlan;
   }
 
   steer(dt) {
     if (this.smoke && this.mode === 'run') {
-      this.laneX = clamp(this.smokeTarget(), -LANE_CLAMP, LANE_CLAMP);
+      // Reference player: same autopilot the tests use, steering at keyboard speed.
+      const aim = autoPilot(this.world, this.level, this.smokePlan(), this.laneX);
+      if (aim.slot !== this.world.loadout.equipped) this.trySwitch(aim.slot);
+      const d = aim.lane - this.laneX;
+      const ms = STEER_SPEED * dt;
+      this.laneX = clamp(Math.abs(d) <= ms ? aim.lane : this.laneX + Math.sign(d) * ms, -LANE_CLAMP, LANE_CLAMP);
       this.targetX = this.laneX;
       return;
     }
@@ -329,6 +361,10 @@ export class PlayScene extends Phaser.Scene {
     this.recoil = Math.max(0, this.recoil - dt * 7);
     this.muzzle = Math.max(0, this.muzzle - dt * 7);
     this.lunge = Math.max(0, this.lunge - dt * 4.5);
+    this.swingT += dt;
+    this.shakeCd = Math.max(0, this.shakeCd - dt);
+    this.decayAnim(this.bossAnim, dt);
+    for (let i = 0; i < this.midMarks.length; i++) this.decayAnim(this.midMarks[i].anim, dt);
     if (this.blurb.alpha > 0 && this.clock > 2.4) {
       this.blurb.alpha = Math.max(0, this.blurb.alpha - dt * 1.4);
     }
@@ -377,6 +413,8 @@ export class PlayScene extends Phaser.Scene {
     if (ev.jet) this.juiceJet(ev.jet);
     for (let i = 0; i < ev.weapons.length; i++) this.juiceWeapon(ev.weapons[i]);
     this.juiceAttacks(ev.attacks);
+    for (let i = 0; i < ev.bossTells.length; i++) this.juiceTell(ev.bossTells[i]);
+    for (let i = 0; i < ev.bossHits.length; i++) this.juiceBossHit(ev.bossHits[i]);
     this.stepShots(dt);
 
     this.fireCd -= dt;
@@ -463,13 +501,27 @@ export class PlayScene extends Phaser.Scene {
     for (let i = 0; i < attacks.length; i++) {
       const a = attacks[i];
       if (a.side === 'blue' && a.shots > 0) {
+        const st = WSTYLE[a.weapon] || WSTYLE.shot;
         this.muzzle = 1;
+        this.muzzleColor = st.flash;
         this.spawnVolley(a);
         this.sfx.attack(a.weapon, this.time.now);
-        if (a.killed > 0) this.spawnImpact(a.front, this.laneX);
+        if (a.killed > 0) {
+          const big = st.shake > 0;
+          this.spawnImpact(a.front + 10, this.laneX + (Math.random() - 0.5) * 0.3, a.weapon, big);
+          if (big && this.shakeCd <= 0) {
+            this.cameras.main.shake(90, st.shake);
+            this.shakeCd = 0.16;
+          }
+        } else if (a.armor > 0) {
+          // Armor chip: a small grey spark so the player sees light guns bouncing.
+          this.spawnSparks(a.front + 6, this.laneX, 2, 0xc8c8c8, 0.18);
+        }
       } else if (a.side === 'red' && a.shots > 0) {
         swung = true;
-        if (a.killed > 0) this.spawnImpact(this.frontY - 12, this.laneX);
+        if (a.killed > 0) {
+          this.spawnImpact(this.frontY - 12, this.laneX + (Math.random() - 0.5) * 0.3, 'swing', false);
+        }
       }
     }
     if (swung) {
@@ -480,28 +532,127 @@ export class PlayScene extends Phaser.Scene {
 
   spawnVolley(a) {
     const kind = a.weapon;
-    const n = kind === 'ball' || kind === 'mortar' ? 1 : kind === 'spread' ? 3 : kind === 'lance' ? 2 : kind === 'bolts' ? 5 : kind === 'needle' ? 6 : 2;
-    const speed = kind === 'mortar' ? 420 : kind === 'ball' ? 520 : kind === 'needle' || kind === 'bolts' ? 1040 : 760;
+    const n = kind === 'ball' || kind === 'mortar' ? 1 : kind === 'spread' ? 3 : kind === 'lance' ? 2 : kind === 'bolts' ? 4 : kind === 'needle' ? 5 : 2;
+    const speed = kind === 'mortar' ? 360 : kind === 'ball' ? 520 : kind === 'needle' || kind === 'bolts' ? 1080 : kind === 'lance' ? 900 : 760;
     for (let i = 0; i < n; i++) {
       const s = this.shotPool[this.shotCursor];
       this.shotCursor = (this.shotCursor + 1) % this.shotPool.length;
       s.on = true;
       s.kind = kind;
-      const fan = kind === 'spread' ? (i - 1) * 0.16 : (i - (n - 1) / 2) * 0.045;
-      s.x = this.laneX + fan;
-      s.y = this.frontY - 10 - i * 8;
+      const fan = kind === 'spread' ? (i - 1) * 0.16 : (i - (n - 1) / 2) * 0.05;
+      s.x = this.laneX + fan + (Math.random() - 0.5) * 0.04;
+      s.y = this.frontY - 10 - i * 10;
+      s.vx = kind === 'spread' ? (i - 1) * 0.35 : 0;
       s.vy = speed;
-      s.life = kind === 'mortar' ? 0.42 : kind === 'ball' ? 0.28 : kind === 'needle' ? 0.12 : 0.16;
+      s.max = kind === 'mortar' ? 0.42 : kind === 'ball' ? 0.28 : kind === 'needle' ? 0.12 : 0.17;
+      s.life = s.max;
+      s.arc = kind === 'mortar' ? 1 : 0;
     }
   }
 
-  spawnImpact(y, x) {
+  spawnImpact(y, x, kind, big) {
     const hit = this.impacts[this.impactCursor];
     this.impactCursor = (this.impactCursor + 1) % this.impacts.length;
     hit.on = true;
     hit.x = x;
     hit.y = y;
-    hit.life = 0.12;
+    hit.kind = kind;
+    hit.big = !!big;
+    hit.max = big ? 0.3 : 0.14;
+    hit.life = hit.max;
+    const st = WSTYLE[kind];
+    const color = kind === 'swing' ? 0xff6a5a : st ? st.color : 0xfff6d4;
+    this.spawnSparks(y, x, big ? 6 : 3, color, big ? 0.38 : 0.22);
+  }
+
+  spawnSparks(y, x, n, color, life) {
+    for (let k = 0; k < n; k++) {
+      const s = this.sparks[this.sparkCursor];
+      this.sparkCursor = (this.sparkCursor + 1) % this.sparks.length;
+      const ang = Math.random() * Math.PI * 2;
+      const sp = 0.4 + Math.random() * 0.9;
+      s.on = true;
+      s.x = x;
+      s.y = y;
+      s.vx = Math.cos(ang) * sp * 0.5;
+      s.vy = Math.sin(ang) * sp * 160;
+      s.color = color;
+      s.max = life;
+      s.life = life;
+    }
+  }
+
+  spawnShock(x, y, r, color, max) {
+    const w = this.waves3[this.waveCursor];
+    this.waveCursor = (this.waveCursor + 1) % this.waves3.length;
+    w.on = true;
+    w.x = x;
+    w.y = y;
+    w.r = r;
+    w.color = color;
+    w.max = max;
+    w.life = max;
+  }
+
+  animFor(id) {
+    if (id === 'boss') return this.bossAnim;
+    for (let i = 0; i < this.midMarks.length; i++) {
+      if (this.midMarks[i].wave.id === id) return this.midMarks[i].anim;
+    }
+    return this.bossAnim;
+  }
+
+  decayAnim(a, dt) {
+    a.dash = Math.max(0, a.dash - dt * 3.2);
+    a.slam = Math.max(0, a.slam - dt * 3);
+  }
+
+  juiceTell(tell) {
+    const m = BOSS_MOVES[tell.kind] || BOSS_MOVES.slam;
+    this.sfx.tell(tell.kind);
+    const p = project(this.frontY - CROWD_DEPTH * 0.4, tell.zones[0].x, this.camY());
+    this.spawnFloater(clamp(p.x, 90, 450), Math.max(160, p.y - 60), m.label + '!', '#ffd2c8');
+    if (tell.kind === 'volley') {
+      // Rocks are in flight for the whole wind-up and land exactly when it resolves.
+      for (let i = 0; i < tell.zones.length; i++) {
+        const b = this.bossShots[this.bossShotCursor];
+        this.bossShotCursor = (this.bossShotCursor + 1) % this.bossShots.length;
+        b.on = true;
+        b.x0 = (Math.random() - 0.5) * 0.3;
+        b.y0 = tell.front + 30;
+        b.x1 = tell.zones[i].x;
+        b.y1 = this.frontY - CROWD_DEPTH * 0.45;
+        b.t = 0;
+        b.dur = tell.wind;
+      }
+    }
+  }
+
+  juiceBossHit(h) {
+    const anim = this.animFor(h.id);
+    const color = MOVE_COLOR[h.kind] || 0xff5a3a;
+    const y = this.frontY - CROWD_DEPTH * 0.45;
+    if (h.kind === 'slam') {
+      anim.slam = 1;
+      for (let i = 0; i < h.zones.length; i++) this.spawnShock(h.zones[i].x, y, h.zones[i].r, color, 0.5);
+    } else if (h.kind === 'charge') {
+      anim.dash = 1;
+      this.spawnShock(h.zones[0].x, y, h.zones[0].r, color, 0.45);
+    } else {
+      for (let i = 0; i < h.zones.length; i++) this.spawnShock(h.zones[i].x, y, h.zones[i].r + 0.04, color, 0.32);
+    }
+    for (let i = 0; i < h.zones.length; i++) this.spawnSparks(y, h.zones[i].x, 4, color, 0.4);
+    this.sfx.boom(h.kind, h.hit);
+    const p = project(y, this.laneX, this.camY());
+    if (h.hit) {
+      this.badFlash = 0.45;
+      this.cameras.main.shake(h.kind === 'charge' ? 260 : 200, h.kind === 'volley' ? 0.008 : 0.014);
+      this.spawnFloater(clamp(p.x, 90, 450), Math.max(170, p.y - 30), '-' + h.killed, '#ff9a8a');
+    } else {
+      this.cameras.main.shake(90, 0.004);
+      this.spawnFloater(clamp(p.x, 90, 450), Math.max(170, p.y - 30), 'DODGED', '#c9f7ff');
+    }
+    this.log.push({ type: 'boss', kind: h.kind, hit: h.hit, killed: h.killed, final: h.final });
   }
 
   stepShots(dt) {
@@ -509,6 +660,7 @@ export class PlayScene extends Phaser.Scene {
       const s = this.shotPool[i];
       if (!s.on) continue;
       s.y += s.vy * dt;
+      s.x += s.vx * dt;
       s.life -= dt;
       if (s.life <= 0) s.on = false;
     }
@@ -517,6 +669,27 @@ export class PlayScene extends Phaser.Scene {
       if (!hit.on) continue;
       hit.life -= dt;
       if (hit.life <= 0) hit.on = false;
+    }
+    for (let i = 0; i < this.sparks.length; i++) {
+      const s = this.sparks[i];
+      if (!s.on) continue;
+      s.x += s.vx * dt;
+      s.y += s.vy * dt;
+      s.vy *= 0.92;
+      s.life -= dt;
+      if (s.life <= 0) s.on = false;
+    }
+    for (let i = 0; i < this.waves3.length; i++) {
+      const w = this.waves3[i];
+      if (!w.on) continue;
+      w.life -= dt;
+      if (w.life <= 0) w.on = false;
+    }
+    for (let i = 0; i < this.bossShots.length; i++) {
+      const b = this.bossShots[i];
+      if (!b.on) continue;
+      b.t += dt;
+      if (b.t >= b.dur + 0.05) b.on = false;
     }
   }
 
@@ -908,12 +1081,15 @@ export class PlayScene extends Phaser.Scene {
         continue;
       }
       const bob = Math.sin(this.clock * 9 + i * 0.7) * 3 * p.scale;
-      const kick = this.muzzle * 5 * p.scale;
+      // Front ranks throw their weight forward on each volley and recoil back.
+      const front = i < blueVis * 0.35;
+      const phase = Math.sin(this.swingT * 22 + i * 1.7);
+      const kick = this.muzzle * (front ? 9 + phase * 4 : 4) * p.scale;
       img.setVisible(true);
       img.setPosition(p.x, p.y + bob - kick);
-      img.setScale(Math.max(0.18, p.scale * 0.95));
+      img.setScale(Math.max(0.18, p.scale * (0.95 + (front ? this.muzzle * 0.08 : 0))));
       img.setDepth(140 + p.y);
-      img.setRotation((slot.spin) * 0.15);
+      img.setRotation(slot.spin * 0.15 + (front ? this.muzzle * phase * 0.22 : 0));
     }
 
     const boss = this.world.boss;
@@ -924,9 +1100,11 @@ export class PlayScene extends Phaser.Scene {
     this.blob.setVisible(blobShow);
     if (blobShow) {
       const sc = bp.scale * grow * (0.72 + 0.28 * frac);
-      const pulse = 1 + Math.sin(this.clock * 3) * 0.03;
-      this.blob.setPosition(bp.x, bp.y + this.lunge * 10 * bp.scale);
-      this.blob.setScale(Math.max(0.2, sc * pulse));
+      const pose = this.bossPose(boss, this.bossAnim, bp.scale);
+      const pulse = 1 + Math.sin(this.clock * (boss.atk ? 14 : 3)) * (boss.atk ? 0.05 : 0.03);
+      this.blob.setPosition(bp.x + pose.dx, bp.y + this.lunge * 10 * bp.scale + pose.dy);
+      this.blob.setScale(Math.max(0.2, sc * pulse * pose.sx), Math.max(0.2, sc * pulse * pose.sy));
+      this.blob.setTint(pose.tint);
       this.blob.setDepth(130 + bp.y);
     }
 
@@ -940,8 +1118,10 @@ export class PlayScene extends Phaser.Scene {
       if (!show) continue;
       const fracM = wave.count > 0 ? clamp(wave.alive / wave.count, 0, 1) : 0;
       const sc = mp.scale * 0.72 * (0.78 + 0.22 * fracM);
-      mark.img.setPosition(mp.x, mp.y + this.lunge * 8);
-      mark.img.setScale(Math.max(0.16, sc));
+      const pose = this.bossPose(wave, mark.anim, mp.scale);
+      mark.img.setPosition(mp.x + pose.dx, mp.y + this.lunge * 8 + pose.dy);
+      mark.img.setScale(Math.max(0.16, sc * pose.sx), Math.max(0.16, sc * pose.sy));
+      mark.img.setTint(pose.tint);
       mark.img.setDepth(128 + mp.y);
       mark.label.setPosition(mp.x, mp.y - Math.max(28, 70 * mp.scale));
       mark.label.setScale(Math.max(0.45, mp.scale));
@@ -983,6 +1163,95 @@ export class PlayScene extends Phaser.Scene {
     }
   }
 
+  /** Wind-up, landing, and dash pose for a boss blob. No allocation: reuses one object. */
+  bossPose(unit, anim, scale) {
+    const pose = this._pose || (this._pose = { dx: 0, dy: 0, sx: 1, sy: 1, tint: 0xffffff });
+    pose.dx = 0;
+    pose.dy = 0;
+    pose.sx = 1;
+    pose.sy = 1;
+    pose.tint = 0xffffff;
+    const atk = unit.atk;
+    if (atk) {
+      const k = clamp(1 - atk.t / atk.wind, 0, 1);
+      const shiver = Math.sin(this.clock * 60) * 3 * scale * k;
+      if (atk.kind === 'slam') {
+        pose.dy = -k * 46 * scale;
+        pose.sx = 1 - k * 0.12;
+        pose.sy = 1 + k * 0.22;
+      } else if (atk.kind === 'charge') {
+        pose.dy = -k * 18 * scale;
+        pose.dx = shiver * 2;
+        pose.sx = 1 + k * 0.16;
+        pose.sy = 1 - k * 0.1;
+      } else {
+        pose.sx = 1 + k * 0.1;
+        pose.sy = 1 + k * 0.1;
+        pose.dx = shiver;
+      }
+      pose.tint = k > 0.66 && Math.sin(this.clock * 40) > 0 ? 0xffd0a0 : 0xffffff;
+    }
+    if (anim.slam > 0) {
+      pose.sx *= 1 + anim.slam * 0.3;
+      pose.sy *= 1 - anim.slam * 0.28;
+      pose.dy += anim.slam * 8 * scale;
+    }
+    if (anim.dash > 0) {
+      pose.dy += anim.dash * 120 * scale;
+      pose.sy *= 1 + anim.dash * 0.12;
+    }
+    return pose;
+  }
+
+  /** Red danger zones on the sand for each live telegraph, filling as it winds up. */
+  drawTells(g, cam) {
+    const yA = this.frontY - CROWD_DEPTH - 10;
+    const yB = this.frontY + 30;
+    const units = this.world.waves;
+    for (let u = 0; u <= units.length; u++) {
+      const unit = u < units.length ? units[u] : this.world.boss;
+      const atk = unit.atk;
+      if (!atk || unit.alive <= 0) continue;
+      const k = clamp(1 - atk.t / atk.wind, 0, 1);
+      const color = MOVE_COLOR[atk.kind] || 0xff5a3a;
+      const blink = Math.sin(this.clock * (12 + k * 20)) > 0 ? 1 : 0.6;
+      for (let i = 0; i < atk.zones.length; i++) {
+        const z = atk.zones[i];
+        const x0 = Math.max(-1, z.x - z.r);
+        const x1 = Math.min(1, z.x + z.r);
+        const a0 = project(yA, x0, cam);
+        const a1 = project(yA, x1, cam);
+        const b0 = project(yB, x0, cam);
+        const b1 = project(yB, x1, cam);
+        g.fillStyle(color, (0.12 + 0.22 * k) * blink);
+        g.beginPath();
+        g.moveTo(a0.x, a0.y);
+        g.lineTo(a1.x, a1.y);
+        g.lineTo(b1.x, b1.y);
+        g.lineTo(b0.x, b0.y);
+        g.closePath();
+        g.fillPath();
+        // Inner bar fills from the far edge toward the crowd as the attack winds up.
+        const yk = yB - (yB - yA) * k;
+        const c0 = project(yk, x0, cam);
+        const c1 = project(yk, x1, cam);
+        g.lineStyle(Math.max(2, 4 * c0.scale), color, 0.95);
+        g.beginPath();
+        g.moveTo(c0.x, c0.y);
+        g.lineTo(c1.x, c1.y);
+        g.strokePath();
+        g.lineStyle(Math.max(1.5, 3 * a0.scale), 0xfff0e6, 0.7 * blink);
+        g.beginPath();
+        g.moveTo(a0.x, a0.y);
+        g.lineTo(b0.x, b0.y);
+        g.moveTo(a1.x, a1.y);
+        g.lineTo(b1.x, b1.y);
+        g.strokePath();
+        g.lineStyle(0, 0, 0);
+      }
+    }
+  }
+
   drawCannon(cam) {
     const p = project(this.cannonY(), this.laneX, cam);
     this.cannonG.clear();
@@ -993,6 +1262,7 @@ export class PlayScene extends Phaser.Scene {
   drawFx(cam) {
     const g = this.fx;
     g.clear();
+    this.drawTells(g, cam);
     g.fillStyle(0xd7ecff, 0.9);
     for (let i = 0; i < this.tracers.length; i++) {
       const tr = this.tracers[i];
@@ -1003,35 +1273,59 @@ export class PlayScene extends Phaser.Scene {
     if (this.muzzle > 0) {
       const m = project(this.frontY - 6, this.laneX, cam);
       if (m.vis) {
-        g.fillStyle(0xfff4c4, 0.35 + this.muzzle * 0.5);
-        g.fillCircle(m.x, m.y, Math.max(4, (10 + this.muzzle * 8) * m.scale));
+        const r = Math.max(4, (10 + this.muzzle * 10) * m.scale);
+        g.fillStyle(this.muzzleColor, 0.25 + this.muzzle * 0.45);
+        g.fillCircle(m.x, m.y, r * 1.5);
+        g.fillStyle(0xffffff, 0.5 + this.muzzle * 0.4);
+        g.fillCircle(m.x, m.y, r * 0.55);
+        for (let k = -1; k <= 1; k++) {
+          g.fillStyle(this.muzzleColor, 0.6 * this.muzzle);
+          g.fillTriangle(m.x + k * r * 0.9, m.y, m.x + k * r * 0.4, m.y - r * 2.2, m.x + k * r * 0.2, m.y);
+        }
       }
     }
     for (let i = 0; i < this.shotPool.length; i++) {
       const s = this.shotPool[i];
       if (!s.on) continue;
+      const st = WSTYLE[s.kind] || WSTYLE.shot;
+      const lift = s.arc ? Math.sin(Math.PI * (1 - s.life / s.max)) * 60 : 0;
       const p = project(s.y, s.x, cam);
       if (!p.vis) continue;
+      const tail = project(s.y - st.trail, s.x - s.vx * 0.05, cam);
+      const py = p.y - lift * p.scale;
+      const ty = tail.y - lift * 0.7 * p.scale;
+      const sz = Math.max(1.4, st.size * p.scale);
+      // Trail
+      g.lineStyle(Math.max(1, sz * (s.kind === 'needle' ? 0.9 : 1.2)), st.color, 0.45);
+      g.beginPath();
+      g.moveTo(tail.x, ty);
+      g.lineTo(p.x, py);
+      g.strokePath();
+      g.lineStyle(0, 0, 0);
       if (s.kind === 'ball' || s.kind === 'mortar') {
-        g.fillStyle(s.kind === 'mortar' ? 0xf3d0ff : 0xfff1c9, 0.95);
-        g.fillCircle(p.x, p.y, Math.max(4, (s.kind === 'mortar' ? 12 : 9) * p.scale));
-        g.fillStyle(s.kind === 'mortar' ? 0xa24bdf : 0xff7a32, 1);
-        g.fillCircle(p.x, p.y, Math.max(2.5, (s.kind === 'mortar' ? 8 : 6) * p.scale));
-      } else if (s.kind === 'lance') {
-        g.fillStyle(0xfff6cf, 1);
-        g.fillRect(p.x - 2, p.y - Math.max(8, 16 * p.scale), 4, Math.max(10, 18 * p.scale));
-      } else if (s.kind === 'needle') {
-        g.fillStyle(0xe8fbff, 1);
-        g.fillRect(p.x - 0.8, p.y - Math.max(8, 18 * p.scale), 1.6, Math.max(10, 20 * p.scale));
-      } else if (s.kind === 'bolts') {
-        g.fillStyle(0xfff3a0, 1);
-        g.fillRect(p.x - 1.5, p.y - Math.max(6, 14 * p.scale), 3, Math.max(8, 16 * p.scale));
+        g.fillStyle(st.color, 0.35);
+        g.fillCircle(p.x, py, sz * 1.6);
+        g.fillStyle(st.color, 1);
+        g.fillCircle(p.x, py, sz);
+        g.fillStyle(st.core, 1);
+        g.fillCircle(p.x - sz * 0.3, py - sz * 0.3, sz * 0.4);
+      } else if (s.kind === 'lance' || s.kind === 'needle' || s.kind === 'bolts') {
+        const len = Math.max(6, (s.kind === 'lance' ? 22 : s.kind === 'needle' ? 18 : 14) * p.scale);
+        g.fillStyle(st.color, 1);
+        g.fillRect(p.x - sz / 2, py - len, sz, len);
+        g.fillStyle(st.core, 1);
+        g.fillRect(p.x - sz / 4, py - len, sz / 2, len * 0.5);
+        if (s.kind === 'lance') g.fillTriangle(p.x - sz, py - len, p.x + sz, py - len, p.x, py - len - sz * 2.5);
       } else if (s.kind === 'spread') {
-        g.fillStyle(0x8ef0c2, 1);
-        g.fillCircle(p.x, p.y, Math.max(2, 4.5 * p.scale));
+        g.fillStyle(st.color, 0.4);
+        g.fillCircle(p.x, py, sz * 1.7);
+        g.fillStyle(st.core, 1);
+        g.fillCircle(p.x, py, sz * 0.8);
       } else {
-        g.fillStyle(0xd7ecff, 1);
-        g.fillCircle(p.x, p.y, Math.max(1.6, 3.4 * p.scale));
+        g.fillStyle(st.color, 1);
+        g.fillCircle(p.x, py, sz);
+        g.fillStyle(st.core, 1);
+        g.fillCircle(p.x, py, sz * 0.5);
       }
     }
     for (let i = 0; i < this.impacts.length; i++) {
@@ -1039,9 +1333,56 @@ export class PlayScene extends Phaser.Scene {
       if (!hit.on) continue;
       const p = project(hit.y, hit.x, cam);
       if (!p.vis) continue;
-      const k = Math.max(0, hit.life / 0.12);
-      g.fillStyle(0xfff6d4, 0.85 * k);
-      g.fillCircle(p.x, p.y, Math.max(3, (16 - k * 6) * p.scale));
+      const k = Math.max(0, hit.life / hit.max);
+      const st = WSTYLE[hit.kind];
+      const color = hit.kind === 'swing' ? 0xff6a5a : st ? st.color : 0xfff6d4;
+      const r = Math.max(3, ((hit.big ? 34 : 16) - k * (hit.big ? 18 : 6)) * p.scale);
+      g.fillStyle(0xfff6d4, 0.75 * k);
+      g.fillCircle(p.x, p.y, r * 0.6);
+      g.lineStyle(Math.max(1.5, (hit.big ? 4 : 2) * p.scale), color, 0.9 * k);
+      g.strokeCircle(p.x, p.y, r);
+      g.lineStyle(0, 0, 0);
+    }
+    for (let i = 0; i < this.sparks.length; i++) {
+      const s = this.sparks[i];
+      if (!s.on) continue;
+      const p = project(s.y, s.x, cam);
+      if (!p.vis) continue;
+      g.fillStyle(s.color, Math.max(0, s.life / s.max));
+      g.fillCircle(p.x, p.y, Math.max(1.2, 3 * p.scale));
+    }
+    for (let i = 0; i < this.waves3.length; i++) {
+      const w = this.waves3[i];
+      if (!w.on) continue;
+      const k = 1 - w.life / w.max;
+      const c = project(w.y, w.x, cam);
+      if (!c.vis) continue;
+      const e = project(w.y, Math.min(1, w.x + w.r * (0.5 + k)), cam);
+      const rx = Math.max(6, Math.abs(e.x - c.x));
+      g.lineStyle(Math.max(2, 9 * c.scale * (1 - k)), w.color, 0.9 * (1 - k));
+      g.strokeEllipse(c.x, c.y, rx * 2, rx * 0.7);
+      g.fillStyle(w.color, 0.22 * (1 - k));
+      g.fillEllipse(c.x, c.y, rx * 1.6, rx * 0.5);
+      g.lineStyle(0, 0, 0);
+    }
+    for (let i = 0; i < this.bossShots.length; i++) {
+      const b = this.bossShots[i];
+      if (!b.on) continue;
+      const k = clamp(b.t / b.dur, 0, 1);
+      const wy = b.y0 + (b.y1 - b.y0) * k;
+      const wx = b.x0 + (b.x1 - b.x0) * k;
+      const p = project(wy, wx, cam);
+      if (!p.vis) continue;
+      const lift = Math.sin(Math.PI * k) * 140 * p.scale;
+      const r = Math.max(4, 10 * p.scale);
+      g.fillStyle(0x000000, 0.18);
+      g.fillEllipse(p.x, p.y, r * 2, r * 0.7);
+      g.fillStyle(0xffb02e, 0.4);
+      g.fillCircle(p.x, p.y - lift, r * 1.6);
+      g.fillStyle(0x7a1420, 1);
+      g.fillCircle(p.x, p.y - lift, r);
+      g.fillStyle(0xffd2a0, 1);
+      g.fillCircle(p.x - r * 0.3, p.y - lift - r * 0.3, r * 0.35);
     }
   }
 

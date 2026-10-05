@@ -28,25 +28,41 @@ Open http://127.0.0.1:8765/
 
 ## Rules
 
-The crowd is one number. A gate changes that number once, not once per soldier. Multiply and add gates are purple (x2 gates are blue). Divide and subtract gates are red. The count caps at 20,000. One yellow jet sits on each lane and grants a bonus if you pass through it.
+The crowd is one number. A gate changes that number once, not once per soldier. Add gates are purple, multiply gates are blue, and divide and subtract gates are red. The count caps at 20,000. One yellow jet sits on each lane and grants a bonus if you pass through it.
+
+Multipliers are rare: two to five per lane, mostly x2 or x3, and each one sits out on an edge or squeezed between red gates. Most rows are add gates and red gates, some four wide. You win by stacking adds and picking the right gun, not by chaining multipliers.
 
 The crowd starts with Shot in a three-slot rack. Pads and drops add Rapid Bolts, Spread Shot, Cannonball, Needle Volley, Twin Lance, and Arc Mortar. A fourth distinct gun replaces a slot you are not using. Keys 1, 2, and 3, or the buttons by the cannon, switch which one fires. A duplicate shows FULL.
 
-Each lane is a long march with waves, a labeled mid-boss, and a final boss. When a pack is in range, blues fire the equipped weapon and reds lunge back. Each landed shot or swing removes soldiers — damage, fire rate, and pierce decide the trade, so a stronger weapon lets a smaller crowd beat a larger wave. The cannon still fires new soldiers on its own. The lane never pauses. After the waves, a boss waits at the end. Beating the boss clears the level. If your count hits zero you can retry. An even trade that empties both sides is a loss. Six lanes, then a victory screen.
+Each lane is a long march with waves, a labeled mid-boss, and a final boss. When a pack is in range, only the front ranks fight: blues fire the equipped weapon and reds swing back. Damage, fire rate, and pierce decide the trade.
 
-On-screen soldiers are capped around 100 sprites so big numbers stay fast. The number itself is the real count.
+Mid-bosses and final bosses wear armor (shown on the mid-boss label). Armor takes damage off every hit, so Shot, Bolts, and Needles only chip a boss while Cannonball, Lance, and Mortar cut through. Switch to a heavy gun for bosses and a fast gun for plain packs. Bosses also hit harder and faster than packs.
+
+Bosses telegraph special attacks. A red zone appears on the sand and fills as the boss winds up:
+
+- **Slam**: the boss rears up and crashes down on one wide spot where you stand.
+- **Volley**: three rocks arc toward three narrow spots. Stand in a gap.
+- **Charge**: the boss shakes, then dashes down a wide strip of the lane.
+
+Steer out of the zone before it fills to dodge. A special that lands takes a big chunk of the crowd. Tanking specials usually loses at the mid-boss.
+
+The cannon still fires new soldiers on its own and the lane never pauses. Beating the final boss clears the level. If your count hits zero you can retry. An even trade that empties both sides is a loss. Six lanes, then a victory screen.
+
+On-screen soldiers are capped around 100 sprites, and shots, sparks, shockwaves, and boss rocks come from fixed pools, so big numbers stay fast. The number itself is the real count.
 
 ## Levels
 
-1. **First Dune** — Stack the x2 and x3, take the jet, and cut the three small waves. A red divide dies in the stream. Boss 40.
-2. **Split Sand** — The x4 into x3 chain outlasts the marching packs. Boss 90.
-3. **Switchback** — Weave across the lane into the larger multiplier between waves. A fat plus is bait. Boss 160.
-4. **Jetline** — Stay on the left-hand multipliers and take the jet. The same gates without the jet die in the last wave. Boss 700.
-5. **Purple Stack** — Ride x5 through x16 up to the cap. The red exit is halved, then eaten by the wave before the boss. Boss 4,000.
-6. **Last Stand** — Only the full multiplier line plus the jet gets past the king's vanguard. Boss 4,050.
+| Lane | Multipliers | Mid-boss | Final boss |
+|---|---|---|---|
+| 1. First Dune | 2 (x2) | 130, armor 1, slam | 260, armor 1, slam + volley |
+| 2. Split Sand | 3 (x2) | 260, armor 1, slam + volley | 560, armor 2, slam + volley + charge |
+| 3. Switchback | 3 (up to x3) | 560, armor 1, volley + slam | 900, armor 2, all three |
+| 4. Jetline | 3 (up to x3) | 1,200, armor 1, slam + charge | 3,600, armor 2, all three. Needs the jet. |
+| 5. Purple Stack | 5 (one x4) | 2,000, armor 2, all three | 9,500, armor 2, all three |
+| 6. Last Stand | 3 (up to x3) | 1,600, armor 2, all three | 11,000, armor 2, all three. Needs the jet. |
 
 ## Tests
 
-`npm test` checks gate math, weapon hits, and that each level's good line plus its weapon beats the boss while a bad line that skips the weapon dies in a wave.
+`npm test` checks gate math, front-rank combat, armor, boss telegraphs and dodging, multiplier rarity, and three reference players on every lane. A skilled run (good gates, the jet, weapons, dodging, and switching guns) wins. A sloppy run that takes the good gates but tanks specials and never switches loses to a boss. A lazy run through red gates dies in a wave. On jet lanes, skipping the jet loses.
 
-`http://127.0.0.1:8765/?smoke=1` auto-plays level 1 with that winning line (for the headless check). It is not a menu cheat for later levels.
+`http://127.0.0.1:8765/?smoke=1` auto-plays level 1 with the skilled reference player (it dodges and switches guns) (for the headless check). It is not a menu cheat for later levels.

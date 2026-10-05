@@ -168,6 +168,75 @@ export function resolveHits(shots, damage, pierce, alive) {
   return { shots: n, killed, left: hp - killed };
 }
 
+/** Only the front ranks can fight at once, so big fights take seconds, not frames. */
+export const FRONT_BASE = 40;
+export const FRONT_ROOT = 4;
+export function frontline(n) {
+  const c = Math.max(0, Math.floor(Number(n) || 0));
+  return Math.min(c, Math.floor(FRONT_BASE + Math.sqrt(c) * FRONT_ROOT));
+}
+
+/** Damage one hit lands through armor. Light guns only chip armored bosses. */
+export function armorDamage(damage, armor) {
+  const d = Math.max(0, Number(damage) || 0);
+  const a = Math.max(0, Number(armor) || 0);
+  if (a <= 0) return d;
+  return Math.max(d - a, d / ((1 + a) * 2));
+}
+
+/** Per-soldier kills per second for a weapon against a given armor. */
+export function weaponVs(weapon, armor) {
+  const w = weapon || WEAPONS.shot;
+  return w.rate * armorDamage(w.damage, armor) * Math.max(1, w.pierce);
+}
+
+/** Like resolveHits, but carries fractional damage so armor chip still adds up. */
+export function landHits(shots, damage, pierce, alive, acc = 0) {
+  const n = Math.max(0, Math.floor(Number(shots) || 0));
+  const hp = Math.max(0, Math.floor(Number(alive) || 0));
+  const total = n * Math.max(0, Number(damage) || 0) * Math.max(1, Math.floor(Number(pierce) || 1)) + (Number(acc) || 0);
+  let killed = Math.floor(total + 1e-9);
+  let rest = total - killed;
+  if (killed >= hp) { killed = hp; rest = 0; }
+  return { shots: n, killed, left: hp - killed, acc: rest };
+}
+
+// Boss specials. Each one is telegraphed for `wind` seconds at the lane spot
+// the crowd held when it started, then lands. Steering out of the zone dodges it.
+export const BOSS_MOVES = {
+  slam: { kind: 'slam', label: 'SLAM', frac: 0.2, flat: 6 },
+  volley: { kind: 'volley', label: 'VOLLEY', frac: 0.12, flat: 4 },
+  charge: { kind: 'charge', label: 'CHARGE', frac: 0.26, flat: 8 },
+};
+export const BOSS_RANGE = 320;
+
+export function moveZones(kind, laneX) {
+  const x = Math.max(-1, Math.min(1, Number(laneX) || 0));
+  if (kind === 'volley') {
+    return [-0.45, 0, 0.45]
+      .map((o) => ({ x: x + o, r: 0.12 }))
+      .filter((z) => z.x >= -1.05 && z.x <= 1.05);
+  }
+  if (kind === 'charge') {
+    return [{ x: Math.max(-0.45, Math.min(0.45, x)), r: 0.55 }];
+  }
+  return [{ x, r: 0.3 }];
+}
+
+export function inZones(zones, laneX) {
+  for (let i = 0; i < zones.length; i++) {
+    if (Math.abs(laneX - zones[i].x) <= zones[i].r + 1e-9) return true;
+  }
+  return false;
+}
+
+/** Soldiers a landed special removes. */
+export function moveKill(kind, count, power = 1) {
+  const m = BOSS_MOVES[kind] || BOSS_MOVES.slam;
+  const c = Math.max(0, Math.floor(Number(count) || 0));
+  return Math.min(c, Math.ceil((c * m.frac + m.flat) * Math.max(0, Number(power) || 0)));
+}
+
 export const ENEMY_MARCH = 130;
 export const PUSH_MULT = 0.42;
 export const WAVE_DEPTH = 150;
@@ -189,7 +258,21 @@ function inShotRange(blueFront, redFront, redDepth) {
   return redFront <= blueFront + SHOT_REACH && redTail >= blueBack - 10;
 }
 
+function bossKit(src, final) {
+  const s = src || {};
+  return {
+    armor: s.armor != null ? s.armor : (final ? 2 : 1),
+    swingDamage: s.swing ? s.swing.damage : (final ? 2 : 1),
+    swingRate: s.swing ? s.swing.rate : (final ? 3 : 2.5),
+    moves: s.moves || (final ? ['slam', 'volley', 'charge'] : ['slam', 'volley']),
+    every: s.every || (final ? 2.1 : 2.6),
+    wind: s.wind || (final ? 0.75 : 0.85),
+    power: s.power || 1,
+  };
+}
+
 function makeWave(w, i) {
+  const kit = w.mid ? bossKit(w, false) : null;
   return {
     id: i,
     y0: w.y,
@@ -205,6 +288,14 @@ function makeWave(w, i) {
     dropX: w.dropX != null ? w.dropX : (w.mid ? -0.72 : 0.82),
     dropped: false,
     redAcc: 0,
+    dmgAcc: 0,
+    armor: kit ? kit.armor : 0,
+    swingDamage: kit ? kit.swingDamage : RED_ATTACK.damage,
+    swingRate: kit ? kit.swingRate : RED_ATTACK.rate,
+    kit,
+    atk: null,
+    atkCd: 0.6,
+    moveIdx: 0,
   };
 }
 
@@ -222,10 +313,12 @@ export function createWorld(level, frontY = START_FRONT) {
     y: -1, x: 0, radius: 0, id: 'shot', resolved: true, taken: false, source: 'pad',
   };
   const loadout = freshLoadout();
+  const kit = bossKit(level.boss, true);
   return {
     count: level.start,
     frontY,
     laneX: 0,
+    time: 0,
     loadout,
     weapon: heldWeapon(loadout),
     blueAcc: 0,
@@ -248,6 +341,7 @@ export function createWorld(level, frontY = START_FRONT) {
     pickups: padSrc ? [pad] : [],
     waves: (level.waves || []).map(makeWave),
     boss: {
+      id: 'boss',
       y0: level.boss.y,
       front: level.boss.y,
       count: level.boss.count,
@@ -260,7 +354,16 @@ export function createWorld(level, frontY = START_FRONT) {
       drop: null,
       dropped: false,
       redAcc: 0,
+      dmgAcc: 0,
+      armor: kit.armor,
+      swingDamage: kit.swingDamage,
+      swingRate: kit.swingRate,
+      kit,
+      atk: null,
+      atkCd: 0.35,
+      moveIdx: 0,
     },
+    stats: { tells: 0, landed: 0, dodged: 0, specialKills: 0 },
     won: false,
     lost: false,
     diedAt: null,
@@ -322,15 +425,89 @@ function takePickup(world, pickup) {
   };
 }
 
+function bossInRange(world, unit) {
+  return unit.alive > 0 && unit.kit && unit.front - world.frontY <= BOSS_RANGE && unit.front + unit.depth >= world.frontY - CROWD_DEPTH;
+}
+
+/** Advance telegraphs and land specials. Returns true if the crowd died. */
+function stepBossMoves(world, unit, step, events) {
+  if (!bossInRange(world, unit)) {
+    unit.atk = null;
+    return false;
+  }
+  const kit = unit.kit;
+  if (unit.atk) {
+    unit.atk.t -= step;
+    if (unit.atk.t > 0) return false;
+    const atk = unit.atk;
+    unit.atk = null;
+    unit.atkCd = kit.every;
+    const hit = inZones(atk.zones, world.laneX);
+    const killed = hit ? moveKill(atk.kind, world.count, kit.power) : 0;
+    if (hit) {
+      world.stats.landed += 1;
+      world.stats.specialKills += killed;
+      world.count -= killed;
+    } else {
+      world.stats.dodged += 1;
+    }
+    events.bossHits.push({
+      id: unit.final ? 'boss' : unit.id,
+      final: !!unit.final,
+      kind: atk.kind,
+      zones: atk.zones,
+      hit,
+      killed,
+      front: unit.front,
+      count: world.count,
+    });
+    if (world.count <= 0) {
+      world.count = 0;
+      world.lost = true;
+      world.won = false;
+      world.diedAt = unit.final ? 'boss' : 'mid';
+      return true;
+    }
+    return false;
+  }
+  unit.atkCd -= step;
+  if (unit.atkCd > 0) return false;
+  const kind = kit.moves[unit.moveIdx % kit.moves.length];
+  unit.moveIdx += 1;
+  unit.atk = { kind, t: kit.wind, wind: kit.wind, zones: moveZones(kind, world.laneX) };
+  world.stats.tells += 1;
+  events.bossTells.push({
+    id: unit.final ? 'boss' : unit.id,
+    final: !!unit.final,
+    kind,
+    zones: unit.atk.zones,
+    wind: kit.wind,
+    front: unit.front,
+  });
+  return false;
+}
+
+/** Live telegraphs the crowd can still dodge. */
+export function activeThreats(world) {
+  const out = [];
+  const units = world.waves.concat([world.boss]);
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i];
+    if (u.atk && u.alive > 0) out.push({ unit: u, kind: u.atk.kind, zones: u.atk.zones, t: u.atk.t, wind: u.atk.wind });
+  }
+  return out;
+}
+
 /**
  * Advance the lane by dt seconds. laneX is the crowd's steered position.
- * Mutates world. Gates, pickups, drops, waves, and weapon hits share one clock.
+ * Mutates world. Gates, pickups, drops, waves, boss specials, and hits share one clock.
  */
 export function stepWorld(world, dt, laneX) {
-  const events = { gates: [], jet: null, weapon: null, weapons: [], attacks: [], drops: [] };
+  const events = { gates: [], jet: null, weapon: null, weapons: [], attacks: [], drops: [], bossTells: [], bossHits: [] };
   if (world.won || world.lost) return events;
   const step = Math.max(0, Number(dt) || 0);
   if (step === 0) return events;
+  world.time += step;
   world.laneX = Math.max(-1, Math.min(1, Number(laneX) || 0));
 
   const units = world.waves.concat([world.boss]);
@@ -378,6 +555,10 @@ export function stepWorld(world, dt, laneX) {
     }
   }
 
+  for (const u of units) {
+    if (u.kit && stepBossMoves(world, u, step, events)) return events;
+  }
+
   const living = units.filter((u) => u.alive > 0 && inShotRange(world.frontY, u.front, u.depth));
   living.sort((a, b) => a.front - b.front || (a.final === b.final ? 0 : a.final ? 1 : -1));
   const target = living[0];
@@ -386,15 +567,16 @@ export function stepWorld(world, dt, laneX) {
   } else {
     const wpn = world.weapon;
     const melee = yTouch(world.frontY, target.front, target.depth);
-    const fired = fireTicks(world.count, wpn.rate, step, world.blueAcc);
+    const fired = fireTicks(frontline(world.count), wpn.rate, step, world.blueAcc);
     world.blueAcc = fired.acc;
     const swung = melee
-      ? fireTicks(target.alive, RED_ATTACK.rate, step, target.redAcc || 0)
+      ? fireTicks(frontline(target.alive), target.swingRate, step, target.redAcc || 0)
       : { shots: 0, acc: target.redAcc || 0 };
     target.redAcc = swung.acc;
-    const blueHit = resolveHits(fired.shots, wpn.damage, wpn.pierce, target.alive);
-    const redHit = resolveHits(swung.shots, RED_ATTACK.damage, RED_ATTACK.pierce, world.count);
+    const blueHit = landHits(fired.shots, armorDamage(wpn.damage, target.armor), wpn.pierce, target.alive, target.dmgAcc);
+    const redHit = resolveHits(swung.shots, target.swingDamage, 1, world.count);
     target.alive = blueHit.left;
+    target.dmgAcc = blueHit.acc;
     world.count = redHit.left;
     if (blueHit.shots > 0) {
       events.attacks.push({
@@ -404,6 +586,7 @@ export function stepWorld(world, dt, laneX) {
         weapon: wpn.id,
         boss: !!target.final,
         mid: !!target.mid,
+        armor: target.armor,
         id: target.final ? 'boss' : target.id,
         front: target.front,
       });
@@ -422,6 +605,7 @@ export function stepWorld(world, dt, laneX) {
     }
     if (target.alive <= 0) {
       target.alive = 0;
+      target.atk = null;
       const drop = spawnDrop(world, target);
       if (drop) events.drops.push(drop);
     }
@@ -445,31 +629,111 @@ export function stepWorld(world, dt, laneX) {
   return events;
 }
 
-/** Steer a keyboard-speed crowd through gates, the jet, and the fixed weapon pad. */
-export function playThrough(level, indices, wantJet, wantWeapon = false, dt = 1 / 90) {
+/** The nearest living enemy body ahead of (or on) the crowd. */
+export function nextFoe(world, reach = 700) {
+  let best = null;
+  const units = world.waves.concat([world.boss]);
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i];
+    if (u.alive <= 0) continue;
+    if (u.front + u.depth < world.frontY - CROWD_DEPTH) continue;
+    if (u.front - world.frontY > reach) continue;
+    if (!best || u.front < best.front) best = u;
+  }
+  return best;
+}
+
+/** Best held slot against an armor value. */
+export function bestSlot(loadout, armor) {
+  let best = loadout.equipped;
+  let score = -1;
+  for (let i = 0; i < loadout.slots.length; i++) {
+    const id = loadout.slots[i];
+    if (!id) continue;
+    const s = weaponVs(weaponById(id), armor);
+    if (s > score + 1e-9) { score = s; best = i; }
+  }
+  return best;
+}
+
+/** Lane spot outside every live telegraph, nearest to `lane`. */
+export function safeLane(world, lane) {
+  const threats = activeThreats(world);
+  if (!threats.length) return null;
+  const zones = [];
+  for (const th of threats) for (const z of th.zones) zones.push({ x: z.x, r: z.r + 0.08 });
+  if (!inZones(zones, lane)) return null;
+  let best = null;
+  for (let k = -LANE_CLAMP; k <= LANE_CLAMP + 1e-9; k += 0.04) {
+    const x = Math.round(k * 100) / 100;
+    if (inZones(zones, x)) continue;
+    if (best === null || Math.abs(x - lane) < Math.abs(best - lane)) best = x;
+  }
+  return best;
+}
+
+/**
+ * One frame of the reference player: steer to planned gates, jet, pad, and drops;
+ * dodge telegraphs; switch to the best weapon for the next foe.
+ * Returns { lane, slot } targets. Shared by tests and the smoke driver.
+ */
+export function autoPilot(world, level, plan, lane) {
+  const options = [];
+  for (const row of world.rows) {
+    if (!row.triggered) {
+      options.push({ y: row.y, lane: laneCenter(plan.gates[row.index], row.gates.length) });
+    }
+  }
+  if (!world.jet.resolved && plan.jet) options.push({ y: world.jet.y, lane: level.jet.x });
+  for (const pk of world.pickups) {
+    if (pk.resolved) continue;
+    if (pk.source === 'pad' ? plan.weapon : plan.drops) options.push({ y: pk.y, lane: pk.x });
+  }
+  options.sort((a, b) => a.y - b.y);
+  let target = options.length ? options[0].lane : lane;
+  if (plan.dodge) {
+    const safe = safeLane(world, lane);
+    if (safe !== null) target = safe;
+  }
+  if (target < -LANE_CLAMP) target = -LANE_CLAMP;
+  if (target > LANE_CLAMP) target = LANE_CLAMP;
+  let slot = world.loadout.equipped;
+  if (plan.smart) {
+    const foe = nextFoe(world);
+    if (foe) slot = bestSlot(world.loadout, foe.armor);
+  }
+  return { lane: target, slot };
+}
+
+/**
+ * Run a level with a reference player.
+ * playThrough(level, gates, wantJet, wantWeapon, { dodge, smart, drops, dt })
+ */
+export function playThrough(level, indices, wantJet, wantWeapon = false, opts = {}) {
+  const o = typeof opts === 'number' ? { dt: opts } : (opts || {});
+  const dt = o.dt || 1 / 90;
+  const plan = {
+    gates: indices,
+    jet: !!wantJet,
+    weapon: !!wantWeapon,
+    drops: o.drops != null ? !!o.drops : !!wantWeapon,
+    dodge: !!o.dodge,
+    smart: !!o.smart,
+  };
   const world = createWorld(level, START_FRONT);
   let lane = 0;
   let guard = 0;
-  while (!world.won && !world.lost && guard < 800000) {
+  while (!world.won && !world.lost && guard < 1200000) {
     guard += 1;
-    const options = [];
-    for (const row of world.rows) {
-      if (!row.triggered) {
-        options.push({
-          y: row.y,
-          lane: laneCenter(indices[row.index], row.gates.length),
-        });
-      }
+    const aim = autoPilot(world, level, plan, lane);
+    if (aim.slot !== world.loadout.equipped) {
+      switchWeapon(world.loadout, aim.slot);
+      world.weapon = heldWeapon(world.loadout);
+      world.blueAcc = 0;
     }
-    if (!world.jet.resolved && wantJet) options.push({ y: world.jet.y, lane: level.jet.x });
-    if (world.pad && !world.pad.resolved && wantWeapon) options.push({ y: world.pad.y, lane: level.weapon.x });
-    options.sort((a, b) => a.y - b.y);
-    let target = options.length ? options[0].lane : lane;
-    if (target < -LANE_CLAMP) target = -LANE_CLAMP;
-    if (target > LANE_CLAMP) target = LANE_CLAMP;
     const maxStep = STEER_SPEED * dt;
-    const d = target - lane;
-    if (Math.abs(d) <= maxStep) lane = target;
+    const d = aim.lane - lane;
+    if (Math.abs(d) <= maxStep) lane = aim.lane;
     else lane += Math.sign(d) * maxStep;
     stepWorld(world, dt, lane);
     if (world.frontY > level.boss.y + 2500) break;
