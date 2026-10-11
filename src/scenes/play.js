@@ -26,7 +26,7 @@ import {
   MAX_RED,
   GO_DELAY,
 } from '../view.js';
-import { ensureArt, paintBanner, paintCannon } from '../art.js';
+import { ensureArt, paintBanner, paintCannon, preloadArt, hasAtlas, ensureAnims, ATLAS, SAND } from '../art.js';
 import { createSfx } from '../sfx.js';
 import { setStatus, touchLane } from '../status.js';
 
@@ -64,8 +64,15 @@ export class PlayScene extends Phaser.Scene {
     this.smoke = !!(data && data.smoke) || (!hasLevel && bootSmoke);
   }
 
+  preload() {
+    preloadArt(this);
+  }
+
   create() {
     ensureArt(this);
+    ensureAnims(this);
+    this.art = hasAtlas(this);
+    this.sandOn = this.art && this.textures.exists(SAND);
     this.sfx = this.registry.get('sfx') || createSfx();
     if (this.levelIndex < 0 || this.levelIndex >= LEVELS.length) this.levelIndex = 0;
     this.level = LEVELS[this.levelIndex];
@@ -116,6 +123,9 @@ export class PlayScene extends Phaser.Scene {
     this.shakeCd = 0;
     this.bossAnim = { rise: 0, dash: 0, slam: 0 };
 
+    // Sand texture under the lane (scrolls with the camera); the graphics layer on top
+    // only tints it, so walls and stripes keep their look. Absent if the art failed.
+    this.sand = this.sandOn ? this.add.tileSprite(270, 480, 540, 960, SAND).setDepth(-1).setTileScale(0.7) : null;
     this.ground = this.add.graphics().setDepth(0);
     this.fx = this.add.graphics().setDepth(1900);
     this.cannonG = this.add.graphics().setDepth(2100);
@@ -123,18 +133,35 @@ export class PlayScene extends Phaser.Scene {
 
     this.blues = [];
     for (let i = 0; i < MAX_BLUE; i++) {
-      const img = this.add.image(0, 0, 'lr-blue').setVisible(false);
+      const img = (this.art ? this.add.image(0, 0, ATLAS, 'blue_0') : this.add.image(0, 0, 'lr-blue')).setVisible(false);
       img.setOrigin(0.5, 0.9);
       this.blues.push(img);
     }
     this.reds = [];
     for (let i = 0; i < MAX_RED; i++) {
-      const img = this.add.image(0, 0, 'lr-red').setVisible(false);
+      const img = (this.art ? this.add.image(0, 0, ATLAS, 'red_0') : this.add.image(0, 0, 'lr-red')).setVisible(false);
       img.setOrigin(0.5, 0.9);
       this.reds.push(img);
     }
-    this.blob = this.add.image(0, 0, 'lr-blob').setOrigin(0.5, 0.72);
-    this.leadJet = this.add.image(0, 0, 'lr-jet').setVisible(false).setOrigin(0.5, 0.7);
+    this.blob = this.art
+      ? this.add.image(0, 0, ATLAS, 'boss_0').setOrigin(0.5, 0.92)
+      : this.add.image(0, 0, 'lr-blob').setOrigin(0.5, 0.72);
+    this.leadJet = (this.art ? this.add.image(0, 0, ATLAS, 'jet') : this.add.image(0, 0, 'lr-jet')).setVisible(false).setOrigin(0.5, 0.7);
+    // Art-only pools: sprite projectiles, explosion flipbooks, pickup crates, jet, cannon.
+    this.projImgs = [];
+    this.booms = [];
+    this.crates = [];
+    if (this.art) {
+      for (let i = 0; i < 24; i++) this.projImgs.push(this.add.image(0, 0, ATLAS, 'orb').setVisible(false).setDepth(1950));
+      for (let i = 0; i < 10; i++) {
+        const b = this.add.sprite(0, 0, ATLAS, 'boom_0').setVisible(false).setDepth(1960).setOrigin(0.5, 0.7);
+        this.booms.push(b);
+      }
+      for (let i = 0; i < 4; i++) this.crates.push(this.add.image(0, 0, ATLAS, 'crate').setVisible(false).setOrigin(0.5, 0.85));
+      this.jetImg = this.add.image(0, 0, ATLAS, 'jet').setVisible(false).setOrigin(0.5, 0.6);
+      this.cannonImg = this.add.image(0, 0, ATLAS, 'cannon').setOrigin(0.5, 0.75).setDepth(2101);
+    }
+    this.boomCursor = 0;
 
     this.rows = this.level.rows.map((row, index) => {
       const labels = row.gates.map(() => this.add.text(0, 0, '', {
@@ -202,7 +229,9 @@ export class PlayScene extends Phaser.Scene {
       if (!wave.mid) continue;
       this.midMarks.push({
         wave,
-        img: this.add.image(0, 0, 'lr-blob').setOrigin(0.5, 0.72).setVisible(false),
+        img: (this.art
+          ? this.add.image(0, 0, ATLAS, 'mid_0').setOrigin(0.5, 0.92)
+          : this.add.image(0, 0, 'lr-blob').setOrigin(0.5, 0.72)).setVisible(false),
         anim: { rise: 0, dash: 0, slam: 0 },
         label: this.add.text(0, 0, wave.name.toUpperCase() + '  ARMOR ' + wave.armor, {
           fontFamily: FONT, fontSize: '18px', fontStyle: 'bold', color: '#fff0ee',
@@ -560,6 +589,7 @@ export class PlayScene extends Phaser.Scene {
     hit.big = !!big;
     hit.max = big ? 0.3 : 0.14;
     hit.life = hit.max;
+    if (big) this.spawnBoom(y, x, kind === 'mortar' ? 0.85 : 0.6);
     const st = WSTYLE[kind];
     const color = kind === 'swing' ? 0xff6a5a : st ? st.color : 0xfff6d4;
     this.spawnSparks(y, x, big ? 6 : 3, color, big ? 0.38 : 0.22);
@@ -641,7 +671,10 @@ export class PlayScene extends Phaser.Scene {
     } else {
       for (let i = 0; i < h.zones.length; i++) this.spawnShock(h.zones[i].x, y, h.zones[i].r + 0.04, color, 0.32);
     }
-    for (let i = 0; i < h.zones.length; i++) this.spawnSparks(y, h.zones[i].x, 4, color, 0.4);
+    for (let i = 0; i < h.zones.length; i++) {
+      this.spawnSparks(y, h.zones[i].x, 4, color, 0.4);
+      this.spawnBoom(y, h.zones[i].x, h.kind === 'volley' ? 0.8 : 1.3);
+    }
     this.sfx.boom(h.kind, h.hit);
     const p = project(y, this.laneX, this.camY());
     if (h.hit) {
@@ -846,7 +879,7 @@ export class PlayScene extends Phaser.Scene {
     const nRx = VIEW.centerX + VIEW.nearHalf;
 
     g.fillStyle(0xf6d7a4, 1);
-    g.fillRect(0, 0, VIEW.width, VIEW.height);
+    g.fillRect(0, 0, VIEW.width, this.sand ? fL.y + 40 : VIEW.height);
     g.fillStyle(0xffe6ae, 0.95);
     g.fillCircle(438, 58, 28);
     g.fillStyle(0xe7c48a, 1);
@@ -871,7 +904,11 @@ export class PlayScene extends Phaser.Scene {
     g.closePath();
     g.fillPath();
 
-    g.fillStyle(0xf1d6a0, 1);
+    if (this.sand) {
+      this.sand.tilePositionY = -cam * 0.9;
+      this.sand.tilePositionX = this.laneX * 6;
+    }
+    g.fillStyle(0xf1d6a0, this.sand ? 0.28 : 1);
     g.beginPath();
     g.moveTo(nLx, VIEW.height);
     g.lineTo(nRx, VIEW.height);
@@ -991,11 +1028,25 @@ export class PlayScene extends Phaser.Scene {
     if (!show) {
       this.jetLabel.setVisible(false);
       this.jetGfx.setVisible(false);
+      if (this.jetImg) this.jetImg.setVisible(false);
+      return;
+    }
+    const bob = Math.sin(this.clock * 6) * 4 * p.scale;
+    if (this.jetImg) {
+      this.jetGfx.setVisible(false);
+      this.jetImg.setVisible(true);
+      this.jetImg.setPosition(p.x, p.y + bob);
+      this.jetImg.setScale(Math.max(0.3, p.scale * 0.85));
+      this.jetImg.setRotation(Math.sin(this.clock * 3) * 0.08);
+      this.jetImg.setDepth(120 + p.y);
+      this.jetLabel.setVisible(true);
+      this.jetLabel.setPosition(p.x, p.y + bob + 30 * p.scale);
+      this.jetLabel.setScale(Math.max(0.45, p.scale));
+      this.jetLabel.setDepth(121 + p.y);
       return;
     }
     this.jetGfx.setVisible(true);
     this.jetGfx.setDepth(120 + p.y);
-    const bob = Math.sin(this.clock * 6) * 4 * p.scale;
     const w = Math.max(28, 78 * p.scale);
     const h = Math.max(20, 48 * p.scale);
     this.jetGfx.fillStyle(0x000000, 0.18);
@@ -1016,6 +1067,7 @@ export class PlayScene extends Phaser.Scene {
   drawWeapon(cam) {
     this.weaponGfx.clear();
     for (let i = 0; i < this.dropLabels.length; i++) this.dropLabels[i].setVisible(false);
+    for (let i = 0; i < this.crates.length; i++) this.crates[i].setVisible(false);
     const open = this.world.pickups.filter((drop) => !drop.resolved);
     let labelN = 0;
     for (let n = 0; n < open.length; n++) {
@@ -1024,8 +1076,17 @@ export class PlayScene extends Phaser.Scene {
       if (!p.vis || p.t <= 0) continue;
       const bob = Math.sin(this.clock * 5 + n) * 3 * p.scale;
       const s = Math.max(0.35, p.scale);
-      this.weaponGfx.setDepth(120 + p.y);
-      this.paintWeaponIcon(this.weaponGfx, drop.id, p.x, p.y + bob, s);
+      this.weaponGfx.setDepth(121 + p.y);
+      if (n < this.crates.length) {
+        const crate = this.crates[n];
+        crate.setVisible(true);
+        crate.setPosition(p.x, p.y + 10 * s + bob);
+        crate.setScale(s * 0.62);
+        crate.setDepth(120 + p.y);
+        this.paintWeaponIcon(this.weaponGfx, drop.id, p.x, p.y - 30 * s + bob, s * 0.8);
+      } else {
+        this.paintWeaponIcon(this.weaponGfx, drop.id, p.x, p.y + bob, s);
+      }
       if (labelN < this.dropLabels.length) {
         const label = this.dropLabels[labelN++];
         label.setText(weaponById(drop.id).name.toUpperCase());
@@ -1086,8 +1147,16 @@ export class PlayScene extends Phaser.Scene {
       const phase = Math.sin(this.swingT * 22 + i * 1.7);
       const kick = this.muzzle * (front ? 9 + phase * 4 : 4) * p.scale;
       img.setVisible(true);
+      if (this.art) {
+        // Run cycle, then shoot / recoil frames on the front ranks while firing.
+        const f = front && this.muzzle > 0.15
+          ? (this.muzzle > 0.6 ? 'blue_2' : 'blue_3')
+          : ((Math.floor(this.clock * 8 + i * 0.37) & 1) ? 'blue_1' : 'blue_0');
+        if (img.frame.name !== f) img.setFrame(f);
+        img.setFlipX((i & 1) === 1 && !front);
+      }
       img.setPosition(p.x, p.y + bob - kick);
-      img.setScale(Math.max(0.18, p.scale * (0.95 + (front ? this.muzzle * 0.08 : 0))));
+      img.setScale(Math.max(0.18, p.scale * (0.95 + (front ? this.muzzle * 0.08 : 0))) * (this.art ? 0.66 : 1));
       img.setDepth(140 + p.y);
       img.setRotation(slot.spin * 0.15 + (front ? this.muzzle * phase * 0.22 : 0));
     }
@@ -1106,6 +1175,11 @@ export class PlayScene extends Phaser.Scene {
       this.blob.setScale(Math.max(0.2, sc * pulse * pose.sx), Math.max(0.2, sc * pulse * pose.sy));
       this.blob.setTint(pose.tint);
       this.blob.setDepth(130 + bp.y);
+      if (this.art) {
+        this.blob.setFrame(this.bossFrame('boss_', boss, this.bossAnim));
+        this.blob.scaleX *= 0.95;
+        this.blob.scaleY *= 0.95;
+      }
     }
 
     for (let i = 0; i < this.midMarks.length; i++) {
@@ -1123,6 +1197,11 @@ export class PlayScene extends Phaser.Scene {
       mark.img.setScale(Math.max(0.16, sc * pose.sx), Math.max(0.16, sc * pose.sy));
       mark.img.setTint(pose.tint);
       mark.img.setDepth(128 + mp.y);
+      if (this.art) {
+        mark.img.setFrame(this.bossFrame('mid_', wave, mark.anim));
+        mark.img.scaleX *= 1.15;
+        mark.img.scaleY *= 1.15;
+      }
       mark.label.setPosition(mp.x, mp.y - Math.max(28, 70 * mp.scale));
       mark.label.setScale(Math.max(0.45, mp.scale));
       mark.label.setDepth(4100);
@@ -1144,8 +1223,13 @@ export class PlayScene extends Phaser.Scene {
         }
         const bob = Math.sin(this.clock * 8 + i) * 2 * anchor.scale;
         img.setVisible(true);
+        if (this.art) {
+          const f = this.lunge > 0.55 ? 'red_2' : this.lunge > 0.05 ? 'red_3'
+            : ((Math.floor(this.clock * 6 + i * 0.5) & 1) ? 'red_1' : 'red_0');
+          if (img.frame.name !== f) img.setFrame(f);
+        }
         img.setPosition(anchor.x, anchor.y + bob);
-        img.setScale(Math.max(0.16, anchor.scale * 0.9));
+        img.setScale(Math.max(0.16, anchor.scale * 0.9) * (this.art ? 0.66 : 1));
         img.setRotation(this.lunge * 0.45);
         img.setDepth(145 + anchor.y);
       }
@@ -1161,6 +1245,28 @@ export class PlayScene extends Phaser.Scene {
     } else {
       this.leadJet.setVisible(false);
     }
+  }
+
+  /** Atlas frame for a boss: idle, wind-up while telegraphing, strike on landing or swing. */
+  bossFrame(prefix, unit, anim) {
+    if (anim.slam > 0.2 || anim.dash > 0.2 || this.lunge > 0.6) return prefix + '2';
+    if (unit.atk) return prefix + '1';
+    return prefix + '0';
+  }
+
+  /** Flipbook explosion from the pool. */
+  spawnBoom(y, x, size) {
+    if (!this.booms.length) return;
+    const p = project(y, x, this.camY());
+    if (!p.vis) return;
+    const b = this.booms[this.boomCursor];
+    this.boomCursor = (this.boomCursor + 1) % this.booms.length;
+    b.setVisible(true);
+    b.setPosition(p.x, p.y);
+    b.setScale(Math.max(0.2, p.scale * size));
+    b.setRotation((Math.random() - 0.5) * 0.6);
+    b.setDepth(1960 + p.y * 0.01);
+    b.play('lr-boom');
   }
 
   /** Wind-up, landing, and dash pose for a boss blob. No allocation: reuses one object. */
@@ -1256,12 +1362,42 @@ export class PlayScene extends Phaser.Scene {
     const p = project(this.cannonY(), this.laneX, cam);
     this.cannonG.clear();
     const sc = Math.max(0.55, p.scale * 1.05);
+    if (this.cannonImg) {
+      const y = Math.min(VIEW.height - 8, p.y);
+      const kick = this.recoil * 10 * sc;
+      this.cannonG.fillStyle(0x000000, 0.22);
+      this.cannonG.fillEllipse(p.x, y + 18 * sc, 92 * sc, 18 * sc);
+      this.cannonImg.setPosition(p.x, y + kick);
+      this.cannonImg.setScale(sc * 0.62 * (1 + this.recoil * 0.04), sc * 0.62 * (1 - this.recoil * 0.05));
+      this.cannonImg.setAngle(-38 + clamp(this.targetX - this.laneX, -1, 1) * 10);
+      const flash = Math.max(0, this.recoil);
+      if (flash > 0.05) {
+        this.cannonG.fillStyle(0xb9dcff, 0.3 + flash * 0.6);
+        this.cannonG.fillCircle(p.x, y - 52 * sc + kick, (8 + flash * 10) * sc);
+        this.cannonG.fillStyle(0xffffff, 0.9);
+        this.cannonG.fillCircle(p.x, y - 52 * sc + kick, 3.5 * sc);
+      }
+      return;
+    }
     paintCannon(this.cannonG, p.x, Math.min(VIEW.height - 8, p.y), sc, this.recoil, this.frontY * 0.04);
+  }
+
+  /** Next free sprite from the projectile pool (reset each frame by drawFx). */
+  projSprite(frame, x, y, scale, rot) {
+    if (this.projUsed >= this.projImgs.length) return false;
+    const img = this.projImgs[this.projUsed++];
+    if (img.frame.name !== frame) img.setFrame(frame);
+    img.setVisible(true);
+    img.setPosition(x, y);
+    img.setScale(scale);
+    img.setRotation(rot);
+    return true;
   }
 
   drawFx(cam) {
     const g = this.fx;
     g.clear();
+    this.projUsed = 0;
     this.drawTells(g, cam);
     g.fillStyle(0xd7ecff, 0.9);
     for (let i = 0; i < this.tracers.length; i++) {
@@ -1302,7 +1438,12 @@ export class PlayScene extends Phaser.Scene {
       g.lineTo(p.x, py);
       g.strokePath();
       g.lineStyle(0, 0, 0);
-      if (s.kind === 'ball' || s.kind === 'mortar') {
+      if ((s.kind === 'ball' || s.kind === 'mortar') && this.art
+        && this.projSprite(s.kind === 'ball' ? 'orb' : 'shell', p.x, py,
+          Math.max(0.25, sz / (s.kind === 'ball' ? 18 : 22)), s.kind === 'mortar' ? Math.PI + (1 - s.life / s.max) * 0.8 - 0.4 : this.clock * 8)) {
+        g.fillStyle(st.color, 0.3);
+        g.fillCircle(p.x, py, sz * 1.8);
+      } else if (s.kind === 'ball' || s.kind === 'mortar') {
         g.fillStyle(st.color, 0.35);
         g.fillCircle(p.x, py, sz * 1.6);
         g.fillStyle(st.color, 1);
@@ -1379,11 +1520,13 @@ export class PlayScene extends Phaser.Scene {
       g.fillEllipse(p.x, p.y, r * 2, r * 0.7);
       g.fillStyle(0xffb02e, 0.4);
       g.fillCircle(p.x, p.y - lift, r * 1.6);
+      if (this.art && this.projSprite('rock', p.x, p.y - lift, Math.max(0.2, r / 22), this.clock * 5 + i)) continue;
       g.fillStyle(0x7a1420, 1);
       g.fillCircle(p.x, p.y - lift, r);
       g.fillStyle(0xffd2a0, 1);
       g.fillCircle(p.x - r * 0.3, p.y - lift - r * 0.3, r * 0.35);
     }
+    for (let i = this.projUsed; i < this.projImgs.length; i++) this.projImgs[i].setVisible(false);
   }
 
   drawHud(cam) {

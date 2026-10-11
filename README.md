@@ -2,7 +2,11 @@
 
 An original portrait lane game. A cannon at the bottom of a walled sand lane fires a crowd of blue soldiers. Steer through multiplier gates, grab the yellow jet and a weapon pickup, and fight red waves in real time until the boss.
 
-Built with [Phaser 3](https://phaser.io) (MIT). Art is drawn in code. No CDN and no external assets.
+Built with [Phaser 3](https://phaser.io) (MIT). No CDN.
+
+## Art
+
+Sprites (blue soldiers with run/shoot/recoil frames, red grunts with march/wind-up/strike frames, the mid-boss ogre and final-boss warlord with idle/wind-up/strike frames, cannon, jet, weapon crate, cannonball orb, mortar shell, boss rock, a 5-frame explosion) and the sand tile were generated for this project with Gemini's image generator through the `agy` CLI. They are original and ship with the game. `tools/build_atlas.py` keys out the flat magenta backgrounds, slices the sheets, and packs everything into one atlas: `assets/lr-atlas.png` + `.json` (~600 KB) and `assets/lr-sand.jpg` (~50 KB). The raw sheets are not in the repo. If the atlas fails to load, the game falls back to the code-drawn art in `src/art.js`.
 
 ## Run
 

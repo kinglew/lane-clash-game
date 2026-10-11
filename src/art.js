@@ -147,3 +147,34 @@ export function ensureArt(scene) {
   blob.generateTexture('lr-blob', 220, 190);
   blob.destroy();
 }
+
+// ---------------------------------------------------------------------------
+// Generated sprite atlas (assets/lr-atlas.*, built by tools/build_atlas.py from
+// art made with Gemini via the agy CLI). Everything above stays as the fallback:
+// if the atlas fails to load, scenes keep using the code-drawn textures.
+
+export const ATLAS = 'lr-atlas';
+export const SAND = 'lr-sand';
+
+export function preloadArt(scene) {
+  if (scene.textures.exists(ATLAS)) return;
+  scene.load.on('loaderror', (file) => {
+    // Missing art is not fatal; the code-drawn look takes over.
+    scene.registry.set('artFailed', (file && file.key) || true);
+  });
+  scene.load.atlas(ATLAS, 'assets/lr-atlas.png', 'assets/lr-atlas.json');
+  scene.load.image(SAND, 'assets/lr-sand.jpg');
+}
+
+export function hasAtlas(scene) {
+  return scene.textures.exists(ATLAS) && scene.textures.get(ATLAS).has('blue_0');
+}
+
+/** Register sprite animations once (shared across scenes through the global anim manager). */
+export function ensureAnims(scene) {
+  if (!hasAtlas(scene) || scene.anims.exists('lr-boom')) return;
+  const frames = (prefix, ids) => ids.map((i) => ({ key: ATLAS, frame: prefix + i }));
+  scene.anims.create({ key: 'lr-blue-run', frames: frames('blue_', [0, 1]), frameRate: 8, repeat: -1 });
+  scene.anims.create({ key: 'lr-red-march', frames: frames('red_', [0, 1]), frameRate: 6, repeat: -1 });
+  scene.anims.create({ key: 'lr-boom', frames: frames('boom_', [0, 1, 2, 3, 4]), frameRate: 20, repeat: 0, hideOnComplete: true });
+}

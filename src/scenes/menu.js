@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { FONT } from '../view.js';
-import { ensureArt, paintBanner, paintCannon } from '../art.js';
+import { ensureArt, paintBanner, paintCannon, preloadArt, hasAtlas, ensureAnims, ATLAS } from '../art.js';
 import { mul, div } from '../logic.js';
 import { createSfx } from '../sfx.js';
 
@@ -9,8 +9,14 @@ export class MenuScene extends Phaser.Scene {
     super('menu');
   }
 
+  preload() {
+    preloadArt(this);
+  }
+
   create() {
     ensureArt(this);
+    ensureAnims(this);
+    const art = hasAtlas(this);
     this.sfx = this.registry.get('sfx') || createSfx();
     this.started = false;
 
@@ -46,7 +52,7 @@ export class MenuScene extends Phaser.Scene {
     this.add.text(390, 360, '/2', { ...label, fontSize: '32px' }).setOrigin(0.5);
     this.add.text(270, 450, 'x8', { ...label, fontSize: '40px' }).setOrigin(0.5);
 
-    const jet = this.add.image(270, 540, 'lr-jet').setScale(0.95);
+    const jet = art ? this.add.image(270, 540, ATLAS, 'jet').setScale(0.8) : this.add.image(270, 540, 'lr-jet').setScale(0.95);
     this.tweens.add({
       targets: jet,
       y: 528,
@@ -57,7 +63,7 @@ export class MenuScene extends Phaser.Scene {
     });
 
     for (let i = 0; i < 8; i++) {
-      const s = this.add.image(96 + i * 48, 790, 'lr-blue').setScale(1.05);
+      const s = art ? this.add.sprite(96 + i * 48, 790, ATLAS, 'blue_0').setScale(0.7).play({ key: 'lr-blue-run', startFrame: i % 2 }) : this.add.image(96 + i * 48, 790, 'lr-blue').setScale(1.05);
       this.tweens.add({
         targets: s,
         y: 778,
