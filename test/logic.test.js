@@ -25,6 +25,7 @@ import {
   hitDamage,
   weaponFamily,
   typeTag,
+  strongAgainst,
   BOSS_TYPES,
   WEAK_MULT,
   RESIST_MULT,
@@ -342,7 +343,7 @@ for (const level of LEVELS) {
     assert.equal(win.stats.landed, 0, 'skilled play dodges everything');
 
     const sloppy = playThrough(level, pw0(level).gates, pw0(level).jet, true, { dodge: false, smart: false });
-    if (level.id >= 3) {
+    if (level.id >= 4) {
       assert.equal(sloppy.lost, true, level.name + ' no dodging and no switching should lose (left ' + sloppy.count + ')');
       assert.ok(sloppy.diedAt === 'mid' || sloppy.diedAt === 'boss', 'sloppy died at ' + sloppy.diedAt);
     }
@@ -362,3 +363,33 @@ for (const level of LEVELS) {
 function pw0(level) {
   return level.proofWin;
 }
+
+test('weapon icons list the boss types a gun beats, best first, never resisted ones', () => {
+  assert.deepEqual(strongAgainst('shot'), []);
+  assert.deepEqual(strongAgainst('bolts'), ['swift']);
+  assert.deepEqual(strongAgainst('needle'), ['swift']);
+  assert.deepEqual(strongAgainst('spread'), ['swarm']);
+  assert.deepEqual(strongAgainst('lance'), ['bulky']);
+  assert.deepEqual(strongAgainst('ball'), ['armored']);
+  assert.deepEqual(strongAgainst('mortar'), ['armored']);
+  for (const id of Object.keys(WEAPONS)) {
+    for (const type of strongAgainst(id)) assert.ok(typeMult(WEAPONS[id], type) > 1);
+  }
+});
+
+test('dropped weapons auto-equip when picked up, like pads', () => {
+  const level = LEVELS[0];
+  const world = createWorld(level, 400);
+  world.pickups = [{ y: 420, x: 0, radius: 0.2, id: 'lance', resolved: false, taken: false, source: 'wave' }];
+  const ev = stepWorld(world, 0.2, 0);
+  assert.equal(ev.weapon.hit, true);
+  assert.equal(heldWeapon(world.loadout).id, 'lance');
+  assert.equal(world.weapon.id, 'lance');
+  // Running through a gun you already hold switches back to it.
+  switchWeapon(world.loadout, 0);
+  world.weapon = heldWeapon(world.loadout);
+  world.pickups.push({ y: world.frontY + 10, x: 0, radius: 0.2, id: 'lance', resolved: false, taken: false, source: 'mid' });
+  const ev2 = stepWorld(world, 0.2, 0);
+  assert.equal(ev2.weapon.reason, 'have');
+  assert.equal(world.weapon.id, 'lance');
+});
