@@ -27,7 +27,8 @@ Open http://127.0.0.1:8765/
 - Mouse move or touch drag steers the cannon left and right.
 - A / D or the arrow keys steer as well.
 - The cannon fires on its own.
-- SFX / M toggles mute.
+- SFX / M toggles mute. The [ ] button toggles fullscreen.
+- The game fills the whole window on desktop and phones and follows live resizes. The 540x960 play column is centered and scaled to fit; extra space shows more desert, and the HUD sticks to the screen edges.
 - Play, Next, Retry, and Menu are buttons. Enter, Space, or a tap starts from the title screen.
 
 ## Rules
@@ -36,11 +37,15 @@ The crowd is one number. A gate changes that number once, not once per soldier. 
 
 Multipliers are rare: two to five per lane, mostly x2 or x3, and each one sits out on an edge or squeezed between red gates. Most rows are add gates and red gates, some four wide. You win by stacking adds and picking the right gun, not by chaining multipliers.
 
-The crowd starts with Shot in a three-slot rack. Pads and drops add Rapid Bolts, Spread Shot, Cannonball, Needle Volley, Twin Lance, and Arc Mortar. A fourth distinct gun replaces a slot you are not using. Keys 1, 2, and 3, or the buttons by the cannon, switch which one fires. A duplicate shows FULL.
+The crowd starts with Shot in a three-slot rack. Pads and drops add Rapid Bolts, Spread Shot, Cannonball, Needle Volley, Twin Lance, and Arc Mortar. Running through a pad or a dropped gun equips it right away (a floater names it and flashes the icon of what it beats). A fourth distinct gun replaces a slot you are not using. Keys 1, 2, and 3, or the buttons by the cannon, switch which one fires. A duplicate shows FULL.
 
 Each lane is a long march with waves, a labeled mid-boss, and a final boss. When a pack is in range, only the front ranks fight: blues fire the equipped weapon and reds swing back. Damage, fire rate, and pierce decide the trade.
 
 Every mid-boss and final boss has a **type**. Each type has one weakness (that weapon family deals x1.8) and one resistance (x0.5). Everything else is x1, and no weapon ever drops below half damage, so a big enough crowd can win with any gun. The type and its counter show under the boss name, e.g. `WEAK: HEAVY   RESIST: RAPID`. Gold sparks and a `WEAK!` callout mean you picked the right gun. Grey sparks and `RESIST` mean switch. The wave just before each mid-boss drops (or the pad offers) its counter, and each mid-boss drops the counter for the final boss. Plain red packs have no type. Bosses also hit harder than packs, and attack faster on later lanes.
+
+### Type icons
+
+Each boss type has an icon, shown above the boss name: Armored = steel shield, Swarm = cluster of heads, Swift = lightning bolt, Bulky = fist. Under each weapon slot are the icons of the types that gun beats, best first (never a type that resists it). Shot shows a grey "=" badge because it is neutral to every type.
 
 ### Strengths and weaknesses
 

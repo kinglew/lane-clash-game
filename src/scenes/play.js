@@ -13,12 +13,14 @@ import {
   BOSS_MOVES,
   typeTag,
   BOSS_TYPES,
+  strongAgainst,
 } from '../logic.js';
 import {
   FONT,
   VIEW,
   project,
   laneFromScreen,
+  fitCamera,
   RUN_SPEED,
   STEER_SPEED,
   CROWD_DEPTH,
@@ -28,7 +30,7 @@ import {
   MAX_RED,
   GO_DELAY,
 } from '../view.js';
-import { ensureArt, paintBanner, paintCannon, preloadArt, hasAtlas, ensureAnims, ATLAS, SAND } from '../art.js';
+import { ensureArt, paintBanner, paintCannon, preloadArt, hasAtlas, ensureAnims, ATLAS, SAND, ensureTypeIcons, TYPE_ICON } from '../art.js';
 import { createSfx } from '../sfx.js';
 import { setStatus, touchLane } from '../status.js';
 
@@ -73,6 +75,8 @@ export class PlayScene extends Phaser.Scene {
   create() {
     ensureArt(this);
     ensureAnims(this);
+    ensureTypeIcons(this);
+    this.ui = fitCamera(this);
     this.art = hasAtlas(this);
     this.sandOn = this.art && this.textures.exists(SAND);
     this.sfx = this.registry.get('sfx') || createSfx();
@@ -127,7 +131,7 @@ export class PlayScene extends Phaser.Scene {
 
     // Sand texture under the lane (scrolls with the camera); the graphics layer on top
     // only tints it, so walls and stripes keep their look. Absent if the art failed.
-    this.sand = this.sandOn ? this.add.tileSprite(270, 480, 540, 960, SAND).setDepth(-1).setTileScale(0.7) : null;
+    this.sand = this.sandOn ? this.add.tileSprite(270, 480, 4200, 2600, SAND).setDepth(-1).setTileScale(0.7) : null;
     this.ground = this.add.graphics().setDepth(0);
     this.fx = this.add.graphics().setDepth(1900);
     this.cannonG = this.add.graphics().setDepth(2100);
@@ -307,6 +311,28 @@ export class PlayScene extends Phaser.Scene {
     this.muteZone = this.add.zone(VIEW.width - 52, 28, 100, 44).setOrigin(0.5).setDepth(4301)
       .setInteractive({ useHandCursor: true });
     this.muteZone.on('pointerdown', () => this.toggleMute());
+    this.fsText = this.add.text(0, 0, '[ ]', { ...hudStyle, fontSize: '18px' }).setOrigin(1, 0).setDepth(4300);
+    this.fsZone = this.add.zone(0, 0, 56, 44).setOrigin(0.5).setDepth(4301).setInteractive({ useHandCursor: true });
+    this.fsZone.on('pointerdown', () => this.toggleFullscreen());
+
+    // Type icons under each weapon slot (types that gun beats, best first).
+    this.slotIcons = [];
+    for (let i = 0; i < 3; i++) {
+      const row = [];
+      for (let k = 0; k < 2; k++) row.push(this.add.image(0, 0, TYPE_ICON.neutral).setDepth(4602).setScale(0.6).setVisible(false));
+      this.slotIcons.push(row);
+    }
+    this.pickIcon = this.add.image(0, 0, TYPE_ICON.neutral).setDepth(4700).setVisible(false);
+    this.bossIcon = this.add.image(0, 0, TYPE_ICON[this.world.boss.type] || TYPE_ICON.neutral).setDepth(4101).setVisible(false);
+    for (const mark of this.midMarks) {
+      mark.icon = this.add.image(0, 0, TYPE_ICON[mark.wave.type] || TYPE_ICON.neutral).setDepth(4101).setVisible(false);
+    }
+
+    this.slotY = 918;
+    this.layoutHud();
+    const onResize = () => this.layoutHud();
+    this.scale.on('resize', onResize);
+    this.events.once('shutdown', () => this.scale.off('resize', onResize));
 
     this.cursors = this.input.keyboard.createCursorKeys();
     this.keyA = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A);
@@ -338,11 +364,43 @@ export class PlayScene extends Phaser.Scene {
 
   aimFromPointer(p) {
     if (this.mode === 'overlay') return;
-    if (p.y < 70 && p.x > 430) return;
-    if (p.y > 870) return;
+    const ui = this.ui;
+    if (p.worldY < ui.top + 70 && p.worldX > ui.right - 170) return;
+    if (p.worldY > this.slotY - 30) return;
     this.pointerStamp = this.time.now;
-    this.pointerLane = laneFromScreen(p.x);
+    this.pointerLane = laneFromScreen(p.worldX);
     this.sfx.ensure();
+  }
+
+  /** Anchor HUD to the visible edges after a resize (canvas fills the window). */
+  layoutHud() {
+    const ui = (this.ui = fitCamera(this));
+    const top = Math.max(ui.top, -400);
+    const bottom = Math.min(ui.bottom, VIEW.height + 400);
+    const left = Math.max(ui.left, -600);
+    const right = Math.min(ui.right, VIEW.width + 600);
+    this.hudTop = top;
+    this.hudLeft = left;
+    this.hudRight = right;
+    this.levelText.setPosition(left + 18, top + 14);
+    this.nameText.setPosition(left + 18, top + 44);
+    this.blurb.setPosition(270, top + 112);
+    this.muteText.setPosition(right - 16, top + 14);
+    this.muteZone.setPosition(right - 52, top + 28);
+    this.fsText.setPosition(right - 92, top + 14);
+    this.fsZone.setPosition(right - 112, top + 28);
+    // Slot buttons sit above the bottom edge, with room for the type icons below.
+    this.slotY = Math.max(860, bottom - 66);
+    for (let i = 0; i < 3; i++) {
+      const x = 270 + (i - 1) * 156;
+      this.slotZones[i].setPosition(x, this.slotY);
+      this.slotTexts[i].setPosition(x, this.slotY);
+    }
+  }
+
+  toggleFullscreen() {
+    if (this.scale.isFullscreen) this.scale.stopFullscreen();
+    else this.scale.startFullscreen();
   }
 
   toggleMute() {
@@ -507,9 +565,9 @@ export class PlayScene extends Phaser.Scene {
     if (res.changed) {
       this.world.blueAcc = 0;
       this.sfx.weapon();
-      this.spawnFloater(270, 840, (index + 1) + ' ' + this.world.weapon.name.toUpperCase(), '#d6ecff');
+      this.spawnFloater(270, this.slotY - 70, (index + 1) + ' ' + this.world.weapon.name.toUpperCase(), '#d6ecff');
     } else if (res.reason === 'empty') {
-      this.spawnFloater(270, 840, 'EMPTY', '#ffd0d4');
+      this.spawnFloater(270, this.slotY - 70, 'EMPTY', '#ffd0d4');
     }
   }
 
@@ -524,9 +582,20 @@ export class PlayScene extends Phaser.Scene {
     else {
       this.pop = 1.45;
       this.sfx.weapon();
-      label = (ev.slot + 1) + ' ' + ev.name.toUpperCase();
+      label = 'EQUIPPED ' + (ev.slot + 1) + ' ' + ev.name.toUpperCase();
     }
-    this.spawnFloater(p.x, p.y - 18, label, color);
+    if (ev.reason === 'have' && ev.equipped) { label = 'EQUIPPED ' + (ev.slot + 1) + ' ' + ev.name.toUpperCase(); color = '#b9ecff'; }
+    const fx = clamp(p.x, 120, 420);
+    const fy = Math.max(170, p.y - 18);
+    this.spawnFloater(fx, fy, label, color);
+    if (ev.reason !== 'full') {
+      // Flash the icon of what the new gun beats next to the floater.
+      const types = strongAgainst(ev.id);
+      const key = types.length ? TYPE_ICON[types[0]] : TYPE_ICON.neutral;
+      this.pickIcon.setTexture(key).setVisible(true).setAlpha(1).setScale(0.9).setPosition(fx, fy - 40);
+      this.tweens.killTweensOf(this.pickIcon);
+      this.tweens.add({ targets: this.pickIcon, y: fy - 90, alpha: 0, scale: 1.2, duration: 1300, ease: 'Sine.easeOut', onComplete: () => this.pickIcon.setVisible(false) });
+    }
   }
 
   juiceAttacks(attacks) {
@@ -582,7 +651,7 @@ export class PlayScene extends Phaser.Scene {
   spawnVolley(a) {
     const kind = a.weapon;
     const n = kind === 'ball' || kind === 'mortar' ? 1 : kind === 'spread' ? 3 : kind === 'lance' ? 2 : kind === 'bolts' ? 4 : kind === 'needle' ? 5 : 2;
-    const speed = kind === 'mortar' ? 360 : kind === 'ball' ? 520 : kind === 'needle' || kind === 'bolts' ? 1080 : kind === 'lance' ? 900 : 760;
+    const speed = 0.85 * (kind === 'mortar' ? 360 : kind === 'ball' ? 520 : kind === 'needle' || kind === 'bolts' ? 1080 : kind === 'lance' ? 900 : 760);
     for (let i = 0; i < n; i++) {
       const s = this.shotPool[this.shotCursor];
       this.shotCursor = (this.shotCursor + 1) % this.shotPool.length;
@@ -593,7 +662,7 @@ export class PlayScene extends Phaser.Scene {
       s.y = this.frontY - 10 - i * 10;
       s.vx = kind === 'spread' ? (i - 1) * 0.35 : 0;
       s.vy = speed;
-      s.max = kind === 'mortar' ? 0.42 : kind === 'ball' ? 0.28 : kind === 'needle' ? 0.12 : 0.17;
+      s.max = 1.18 * (kind === 'mortar' ? 0.42 : kind === 'ball' ? 0.28 : kind === 'needle' ? 0.12 : 0.17);
       s.life = s.max;
       s.arc = kind === 'mortar' ? 1 : 0;
     }
@@ -795,7 +864,7 @@ export class PlayScene extends Phaser.Scene {
 
     const objs = [];
     const add = (o, d) => { o.setDepth(d); objs.push(o); return o; };
-    add(this.add.rectangle(270, 480, 540, 960, 0x140c08, 0.58), 5000);
+    add(this.add.rectangle(270, 480, 5000, 4000, 0x140c08, 0.58), 5000);
     add(this.add.rectangle(270, 470, 440, 500, 0xf7e7c6, 1).setStrokeStyle(8, 0x3a261c), 5001);
     add(this.add.text(270, 300, title, {
       fontFamily: FONT,
@@ -898,8 +967,17 @@ export class PlayScene extends Phaser.Scene {
     const nLx = VIEW.centerX - VIEW.nearHalf;
     const nRx = VIEW.centerX + VIEW.nearHalf;
 
+    // Off-column terrain: extend fills well past the 540x960 column so wide and
+    // tall screens see more desert instead of black bars.
+    const XL = -2000;
+    const XR = VIEW.width + 2000;
+    const YT = -1000;
+    const YB = VIEW.height + 1100;
+    const ext = (nx, fx) => nx + (fx - nx) * (YB - VIEW.height) / (fL.y - VIEW.height);
+    const bLx = ext(nLx, fL.x);
+    const bRx = ext(nRx, fR.x);
     g.fillStyle(0xf6d7a4, 1);
-    g.fillRect(0, 0, VIEW.width, this.sand ? fL.y + 40 : VIEW.height);
+    g.fillRect(XL, YT, XR - XL, (this.sand ? fL.y + 40 : YB) - YT);
     g.fillStyle(0xffe6ae, 0.95);
     g.fillCircle(438, 58, 28);
     g.fillStyle(0xe7c48a, 1);
@@ -907,22 +985,52 @@ export class PlayScene extends Phaser.Scene {
     g.fillEllipse(400, fL.y + 16, 280, 64);
     g.fillStyle(0xf3e0b4, 1);
     g.fillEllipse(250, fL.y - 6, 180, 36);
+    g.fillStyle(0xe7c48a, 1);
+    g.fillEllipse(-160, fL.y + 10, 380, 70);
+    g.fillEllipse(720, fL.y + 12, 420, 74);
 
     g.fillStyle(0x3a261c, 1);
     g.beginPath();
-    g.moveTo(0, VIEW.height);
-    g.lineTo(nLx, VIEW.height);
+    g.moveTo(XL, YB);
+    g.lineTo(bLx, YB);
     g.lineTo(fL.x, fL.y);
-    g.lineTo(0, fL.y);
+    g.lineTo(XL, fL.y);
     g.closePath();
     g.fillPath();
     g.beginPath();
-    g.moveTo(VIEW.width, VIEW.height);
-    g.lineTo(nRx, VIEW.height);
+    g.moveTo(XR, YB);
+    g.lineTo(bRx, YB);
     g.lineTo(fR.x, fR.y);
-    g.lineTo(VIEW.width, fL.y);
+    g.lineTo(XR, fL.y);
     g.closePath();
     g.fillPath();
+
+    // Open desert beyond a wall band of fixed width, so wide screens show dunes, not just wall.
+    const wallN = 150;
+    const wallF = 34;
+    g.fillStyle(0xe2bd80, this.sand ? 0.55 : 1);
+    g.beginPath();
+    g.moveTo(XL, YB);
+    g.lineTo(bLx - wallN * 1.25, YB);
+    g.lineTo(fL.x - wallF, fL.y);
+    g.lineTo(XL, fL.y);
+    g.closePath();
+    g.fillPath();
+    g.beginPath();
+    g.moveTo(XR, YB);
+    g.lineTo(bRx + wallN * 1.25, YB);
+    g.lineTo(fR.x + wallF, fR.y);
+    g.lineTo(XR, fL.y);
+    g.closePath();
+    g.fillPath();
+    g.lineStyle(4, 0x6a4632, 0.8);
+    g.beginPath();
+    g.moveTo(bLx - wallN * 1.25, YB);
+    g.lineTo(fL.x - wallF, fL.y);
+    g.moveTo(bRx + wallN * 1.25, YB);
+    g.lineTo(fR.x + wallF, fR.y);
+    g.strokePath();
+    g.lineStyle(0, 0, 0);
 
     if (this.sand) {
       this.sand.tilePositionY = -cam * 0.9;
@@ -930,8 +1038,8 @@ export class PlayScene extends Phaser.Scene {
     }
     g.fillStyle(0xf1d6a0, this.sand ? 0.28 : 1);
     g.beginPath();
-    g.moveTo(nLx, VIEW.height);
-    g.lineTo(nRx, VIEW.height);
+    g.moveTo(bLx, YB);
+    g.lineTo(bRx, YB);
     g.lineTo(fR.x, fR.y);
     g.lineTo(fL.x, fL.y);
     g.closePath();
@@ -939,9 +1047,9 @@ export class PlayScene extends Phaser.Scene {
 
     g.lineStyle(6, 0x6a4632, 1);
     g.beginPath();
-    g.moveTo(nLx, VIEW.height);
+    g.moveTo(bLx, YB);
     g.lineTo(fL.x, fL.y);
-    g.moveTo(nRx, VIEW.height);
+    g.moveTo(bRx, YB);
     g.lineTo(fR.x, fR.y);
     g.strokePath();
 
@@ -1191,7 +1299,10 @@ export class PlayScene extends Phaser.Scene {
     if (blobShow) {
       this.bossLabel.setPosition(bp.x, bp.y - Math.max(70, 250 * bp.scale));
       this.bossLabel.setScale(clamp(bp.scale * 1.1, 0.6, 1));
+      this.bossIcon.setPosition(bp.x, this.bossLabel.y - this.bossLabel.displayHeight - 16 * this.bossLabel.scaleY);
+      this.bossIcon.setScale(this.bossLabel.scaleY * 0.9);
     }
+    this.bossIcon.setVisible(blobShow);
     if (blobShow) {
       const sc = bp.scale * grow * (0.72 + 0.28 * frac);
       const pose = this.bossPose(boss, this.bossAnim, bp.scale);
@@ -1214,6 +1325,7 @@ export class PlayScene extends Phaser.Scene {
       const show = wave.alive > 0.05 && mp.vis && mp.t > 0;
       mark.img.setVisible(show);
       mark.label.setVisible(show);
+      mark.icon.setVisible(false);
       if (!show) continue;
       const fracM = wave.count > 0 ? clamp(wave.alive / wave.count, 0, 1) : 0;
       const sc = mp.scale * 0.72 * (0.78 + 0.22 * fracM);
@@ -1229,6 +1341,9 @@ export class PlayScene extends Phaser.Scene {
       }
       mark.label.setPosition(mp.x, mp.y - Math.max(50, 190 * mp.scale));
       mark.label.setScale(clamp(mp.scale, 0.55, 1));
+      mark.icon.setVisible(true);
+      mark.icon.setPosition(mark.label.x, mark.label.y - mark.label.displayHeight - 14 * mark.label.scaleY);
+      mark.icon.setScale(mark.label.scaleY * 0.8);
       mark.label.setDepth(4100);
     }
 
@@ -1564,9 +1679,11 @@ export class PlayScene extends Phaser.Scene {
     g.clear();
     const prog = clamp(this.frontY / this.level.endY, 0, 1);
     g.fillStyle(0x2a1a14, 0.55);
-    g.fillRoundedRect(16, 8, VIEW.width - 32, 6, 3);
+    const barX = this.hudLeft + 16;
+    const barW = this.hudRight - this.hudLeft - 32;
+    g.fillRoundedRect(barX, this.hudTop + 8, barW, 6, 3);
     g.fillStyle(0xffd36a, 1);
-    g.fillRoundedRect(16, 8, (VIEW.width - 32) * prog, 6, 3);
+    g.fillRoundedRect(barX, this.hudTop + 8, barW * prog, 6, 3);
 
     if (this.mode === 'overlay') {
       this.countText.setVisible(false);
@@ -1575,6 +1692,7 @@ export class PlayScene extends Phaser.Scene {
       this.foeCap.setVisible(false);
       this.gunText.setVisible(false);
       for (let i = 0; i < this.slotTexts.length; i++) this.slotTexts[i].setVisible(false);
+      for (const row of this.slotIcons) for (const ic of row) ic.setVisible(false);
       return;
     }
     this.countText.setVisible(true);
@@ -1589,11 +1707,26 @@ export class PlayScene extends Phaser.Scene {
       const x = 270 + (i - 1) * 156;
       const on = this.world.loadout.equipped === i && !!this.world.loadout.slots[i];
       g.fillStyle(on ? 0x2a62e0 : 0x1b2430, 0.92);
-      g.fillRoundedRect(x - 68, 898, 136, 40, 8);
+      const sy = this.slotY - 20;
+      g.fillRoundedRect(x - 68, sy, 136, 40, 8);
       g.lineStyle(3, on ? 0xffe7a3 : 0x3d4e60, 1);
-      g.strokeRoundedRect(x - 68, 898, 136, 40, 8);
+      g.strokeRoundedRect(x - 68, sy, 136, 40, 8);
       g.lineStyle(0, 0, 0);
       const id = this.world.loadout.slots[i];
+      // Under the slot: icons of the boss types this gun beats (best first);
+      // Shot gets the neutral "=" badge; empty slots show nothing.
+      const icons = this.slotIcons[i];
+      const types = id ? strongAgainst(id) : [];
+      const keys = !id ? [] : types.length ? types.map((ty) => TYPE_ICON[ty]) : [TYPE_ICON.neutral];
+      const n = Math.min(keys.length, icons.length);
+      for (let k = 0; k < icons.length; k++) {
+        const ic = icons[k];
+        if (k >= n) { ic.setVisible(false); continue; }
+        if (ic.texture.key !== keys[k]) ic.setTexture(keys[k]);
+        ic.setVisible(true);
+        ic.setPosition(x + (k - (n - 1) / 2) * 28, this.slotY + 38);
+        ic.setAlpha(on ? 1 : 0.75);
+      }
       const name = id ? weaponById(id).name.toUpperCase() : '—';
       const label = this.slotTexts[i];
       label.setVisible(true);

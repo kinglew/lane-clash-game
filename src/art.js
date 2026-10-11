@@ -178,3 +178,86 @@ export function ensureAnims(scene) {
   scene.anims.create({ key: 'lr-red-march', frames: frames('red_', [0, 1]), frameRate: 6, repeat: -1 });
   scene.anims.create({ key: 'lr-boom', frames: frames('boom_', [0, 1, 2, 3, 4]), frameRate: 20, repeat: 0, hideOnComplete: true });
 }
+
+// ---------------------------------------------------------------------------
+// Boss type icons, drawn in code (40x40 badges). Same icon on boss tags, weapon
+// slots, and pickup floaters, so the player can match them at a glance.
+export const TYPE_ICON = {
+  armored: 'lr-ico-armored',
+  swarm: 'lr-ico-swarm',
+  swift: 'lr-ico-swift',
+  bulky: 'lr-ico-bulky',
+  neutral: 'lr-ico-neutral',
+};
+export const TYPE_COLOR = { armored: 0x8fa3b8, swarm: 0x48c774, swift: 0xffcf33, bulky: 0xc77d3a, neutral: 0x9aa3ad };
+
+function badge(g, color) {
+  g.fillStyle(0x1a1410, 1);
+  g.fillCircle(20, 20, 19);
+  g.fillStyle(color, 1);
+  g.fillCircle(20, 20, 16);
+  g.fillStyle(0xffffff, 0.22);
+  g.fillEllipse(20, 12, 22, 10);
+}
+
+export function ensureTypeIcons(scene) {
+  if (scene.textures.exists(TYPE_ICON.armored)) return;
+  const make = (key, color, paint) => {
+    const g = scene.make.graphics({ x: 0, y: 0, add: false });
+    badge(g, color);
+    paint(g);
+    g.generateTexture(key, 40, 40);
+    g.destroy();
+  };
+  // Armored: steel shield with a rivet line.
+  make(TYPE_ICON.armored, TYPE_COLOR.armored, (g) => {
+    g.fillStyle(0x1a1410, 1);
+    g.fillRoundedRect(10, 8, 20, 14, 3);
+    g.fillTriangle(10, 20, 30, 20, 20, 33);
+    g.fillStyle(0xe9f1f8, 1);
+    g.fillRoundedRect(12, 10, 16, 11, 2);
+    g.fillTriangle(12, 20, 28, 20, 20, 30);
+    g.fillStyle(0x5b6f84, 1);
+    g.fillRect(19, 11, 2, 17);
+  });
+  // Swarm: a cluster of small heads.
+  make(TYPE_ICON.swarm, TYPE_COLOR.swarm, (g) => {
+    const dots = [[13, 14], [20, 11], [27, 14], [11, 22], [18, 20], [25, 21], [15, 28], [22, 28], [29, 27]];
+    for (const [x, y] of dots) {
+      g.fillStyle(0x10301c, 1);
+      g.fillCircle(x, y, 4.2);
+      g.fillStyle(0xeafff0, 1);
+      g.fillCircle(x, y, 3);
+    }
+  });
+  // Swift: lightning bolt.
+  make(TYPE_ICON.swift, TYPE_COLOR.swift, (g) => {
+    g.fillStyle(0x3a2a00, 1);
+    g.fillTriangle(23, 5, 9, 23, 21, 22);
+    g.fillTriangle(19, 18, 31, 17, 16, 36);
+    g.fillStyle(0xffffff, 1);
+    g.fillTriangle(22, 8, 12, 21, 20, 20.5);
+    g.fillTriangle(19.5, 19.5, 28, 19, 17.5, 32);
+  });
+  // Bulky: a heavy fist.
+  make(TYPE_ICON.bulky, TYPE_COLOR.bulky, (g) => {
+    g.fillStyle(0x2a1608, 1);
+    g.fillRoundedRect(8, 11, 24, 20, 6);
+    g.fillStyle(0xffe2c4, 1);
+    g.fillRoundedRect(10, 13, 20, 16, 5);
+    g.fillStyle(0x8a4f22, 1);
+    g.fillRect(15, 13, 1.6, 8);
+    g.fillRect(20, 13, 1.6, 8);
+    g.fillRect(25, 13, 1.6, 8);
+    g.fillRoundedRect(10, 22, 9, 6, 2);
+  });
+  // Neutral (Shot): an equals sign.
+  make(TYPE_ICON.neutral, TYPE_COLOR.neutral, (g) => {
+    g.fillStyle(0x1a1410, 1);
+    g.fillRoundedRect(10, 13, 20, 5, 2);
+    g.fillRoundedRect(10, 22, 20, 5, 2);
+    g.fillStyle(0xffffff, 1);
+    g.fillRoundedRect(11, 14, 18, 3, 1);
+    g.fillRoundedRect(11, 23, 18, 3, 1);
+  });
+}

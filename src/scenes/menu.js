@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { FONT } from '../view.js';
+import { FONT, fitCamera } from '../view.js';
 import { ensureArt, paintBanner, paintCannon, preloadArt, hasAtlas, ensureAnims, ATLAS } from '../art.js';
 import { mul, div } from '../logic.js';
 import { createSfx } from '../sfx.js';
@@ -22,20 +22,20 @@ export class MenuScene extends Phaser.Scene {
 
     const g = this.add.graphics();
     g.fillStyle(0xf6d7a4, 1);
-    g.fillRect(0, 0, 540, 960);
+    g.fillRect(-2000, -1000, 4540, 3000);
     g.fillStyle(0xffe7ad, 1);
     g.fillCircle(430, 120, 36);
     g.fillStyle(0xe7c48a, 1);
     g.fillEllipse(120, 210, 220, 70);
     g.fillEllipse(400, 230, 260, 80);
     g.fillStyle(0x3a261c, 1);
-    g.fillRect(0, 250, 70, 710);
-    g.fillRect(470, 250, 70, 710);
+    g.fillRect(-2000, 250, 2070, 1800);
+    g.fillRect(470, 250, 2070, 1800);
     g.fillStyle(0xf0d7a2, 1);
-    g.fillRect(70, 250, 400, 710);
+    g.fillRect(70, 250, 400, 1800);
     g.lineStyle(6, 0x6b4632, 1);
-    g.lineBetween(70, 250, 70, 960);
-    g.lineBetween(470, 250, 470, 960);
+    g.lineBetween(70, 250, 70, 2050);
+    g.lineBetween(470, 250, 470, 2050);
 
     paintBanner(g, 150, 360, 150, 62, mul(2), false, 1);
     paintBanner(g, 390, 360, 150, 62, div(2), false, 1);
@@ -140,7 +140,7 @@ export class MenuScene extends Phaser.Scene {
         this.swallow = false;
         return;
       }
-      if (p.y < 64 && p.x > 430) return;
+      if (this.muteText.getBounds().contains(p.worldX, p.worldY)) return;
       this.begin();
     });
     this.input.keyboard.on('keydown', (ev) => {
@@ -151,6 +151,14 @@ export class MenuScene extends Phaser.Scene {
       this.begin();
     });
     this.input.keyboard.addCapture(['SPACE', 'UP', 'DOWN']);
+
+    const layout = () => {
+      const ui = fitCamera(this);
+      this.muteText.setPosition(ui.right - 18, Math.max(ui.top, -200) + 18);
+    };
+    layout();
+    this.scale.on('resize', layout);
+    this.events.once('shutdown', () => this.scale.off('resize', layout));
   }
 
   doMute() {

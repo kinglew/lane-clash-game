@@ -219,6 +219,16 @@ export function weaponVs(weapon, type) {
   return w.rate * hitDamage(w, type) * Math.max(1, w.pierce);
 }
 
+/** Boss types a weapon is strong against, best first (resisted types never appear). */
+export function strongAgainst(weapon) {
+  const w = typeof weapon === 'string' ? weaponById(weapon) : weapon;
+  return Object.keys(BOSS_TYPES)
+    .map((type) => ({ type, mult: typeMult(w, type) }))
+    .filter((e) => e.mult > 1)
+    .sort((a, b) => b.mult - a.mult)
+    .map((e) => e.type);
+}
+
 /** Short tag shown under a boss name, e.g. "WEAK: HEAVY  RESIST: RAPID". */
 export function typeTag(type) {
   const t = BOSS_TYPES[type];
@@ -273,7 +283,7 @@ export function moveKill(kind, count, power = 1) {
   return Math.min(c, Math.ceil((c * m.frac + m.flat) * Math.max(0, Number(power) || 0)));
 }
 
-export const ENEMY_MARCH = 130;
+export const ENEMY_MARCH = 108;
 export const PUSH_MULT = 0.42;
 export const WAVE_DEPTH = 150;
 export const BOSS_DEPTH = 210;
@@ -444,8 +454,13 @@ function takePickup(world, pickup) {
   if (!hit) {
     return { hit: false, id: pickup.id, name: weaponById(pickup.id).name, count: world.count, reason: 'miss', slot: -1, source: pickup.source, x: pickup.x, y: pickup.y };
   }
-  const equipNew = pickup.source === 'pad';
-  const got = giveWeapon(world.loadout, pickup.id, equipNew);
+  // Pads and drops both equip the gun you run through; 1/2/3 still switch by hand.
+  const got = giveWeapon(world.loadout, pickup.id, true);
+  if (got.reason === 'have' && got.slot >= 0 && world.loadout.equipped !== got.slot) {
+    switchWeapon(world.loadout, got.slot);
+    got.equipped = true;
+  }
+  const equipNew = true;
   world.weapon = heldWeapon(world.loadout);
   if (got.ok && equipNew) world.blueAcc = 0;
   return {

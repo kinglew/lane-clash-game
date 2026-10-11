@@ -1,5 +1,23 @@
 // Screen projection and tuning knobs shared by the sim test and the Phaser scene.
 
+// The play column is always 540x960 logical units. The canvas fills the whole
+// window; fitCamera zooms so the column fits and the extra space shows more
+// terrain on the sides (desktop) or above/below (tall phones).
+export const BASE_W = 540;
+export const BASE_H = 960;
+
+export function fitCamera(scene) {
+  const cam = scene.cameras.main;
+  const w = Math.max(1, scene.scale.width);
+  const h = Math.max(1, scene.scale.height);
+  const z = Math.min(w / BASE_W, h / BASE_H);
+  cam.setZoom(z);
+  cam.centerOn(BASE_W / 2, BASE_H / 2);
+  const hw = w / z / 2;
+  const hh = h / z / 2;
+  return { left: BASE_W / 2 - hw, right: BASE_W / 2 + hw, top: BASE_H / 2 - hh, bottom: BASE_H / 2 + hh, zoom: z };
+}
+
 export const FONT = 'Trebuchet MS, Verdana, sans-serif';
 
 export const VIEW = {
@@ -13,7 +31,7 @@ export const VIEW = {
   centerX: 270,
 };
 
-export const RUN_SPEED = 300;
+export const RUN_SPEED = 250;
 export const STEER_SPEED = 2.55;
 export const CROWD_DEPTH = 230;
 export const START_FRONT = 210;

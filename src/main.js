@@ -12,14 +12,17 @@ const sfx = createSfx();
 const game = new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',
-  width: 540,
-  height: 960,
+  // The canvas always fills the window; scenes zoom their camera to fit the
+  // 540x960 play column and show extra terrain around it (see fitCamera).
+  width: window.innerWidth || 540,
+  height: window.innerHeight || 960,
   backgroundColor: '#e7c98a',
   banner: false,
   render: { antialias: true, pixelArt: false },
   scale: {
-    mode: Phaser.Scale.FIT,
-    autoCenter: Phaser.Scale.CENTER_BOTH,
+    mode: Phaser.Scale.RESIZE,
+    autoCenter: Phaser.Scale.NO_CENTER,
+    fullscreenTarget: 'game',
   },
   scene: smoke ? [PlayScene, MenuScene] : [MenuScene, PlayScene],
   callbacks: {
