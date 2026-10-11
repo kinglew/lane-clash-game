@@ -40,7 +40,24 @@ The crowd starts with Shot in a three-slot rack. Pads and drops add Rapid Bolts,
 
 Each lane is a long march with waves, a labeled mid-boss, and a final boss. When a pack is in range, only the front ranks fight: blues fire the equipped weapon and reds swing back. Damage, fire rate, and pierce decide the trade.
 
-Mid-bosses and final bosses wear armor (shown on the mid-boss label). Armor takes damage off every hit, so Shot, Bolts, and Needles only chip a boss while Cannonball, Lance, and Mortar cut through. Switch to a heavy gun for bosses and a fast gun for plain packs. Bosses also hit harder and faster than packs.
+Every mid-boss and final boss has a **type**. Each type has one weakness (that weapon family deals x1.8) and one resistance (x0.5). Everything else is x1, and no weapon ever drops below half damage, so a big enough crowd can win with any gun. The type and its counter show under the boss name, e.g. `WEAK: HEAVY   RESIST: RAPID`. Gold sparks and a `WEAK!` callout mean you picked the right gun. Grey sparks and `RESIST` mean switch. The wave just before each mid-boss drops (or the pad offers) its counter, and each mid-boss drops the counter for the final boss. Plain red packs have no type. Bosses also hit harder than packs, and attack faster on later lanes.
+
+### Strengths and weaknesses
+
+| Weapon family | Weapons |
+|---|---|
+| Shot | Shot (neutral to every type) |
+| Rapid | Rapid Bolts, Needle Volley |
+| Spread | Spread Shot |
+| Pierce | Twin Lance |
+| Heavy | Cannonball, Arc Mortar |
+
+| Boss type | Weak to (x1.8) | Resists (x0.5) | Why |
+|---|---|---|---|
+| Armored | Heavy | Rapid | Thick plate: shells crack it, small rounds bounce. |
+| Swarm | Spread | Heavy | Many small bodies: spread hits several, shells overkill one. |
+| Swift | Rapid | Pierce | Quick and dodgy: volume of fire catches it, slow lances miss. |
+| Bulky | Pierce | Spread | Deep ranks: lances run through, spread pellets scatter. |
 
 Bosses telegraph special attacks. A red zone appears on the sand and fills as the boss winds up:
 
@@ -56,17 +73,26 @@ On-screen soldiers are capped around 100 sprites, and shots, sparks, shockwaves,
 
 ## Levels
 
-| Lane | Multipliers | Mid-boss | Final boss |
-|---|---|---|---|
-| 1. First Dune | 2 (x2) | 130, armor 1, slam | 260, armor 1, slam + volley |
-| 2. Split Sand | 3 (x2) | 260, armor 1, slam + volley | 560, armor 2, slam + volley + charge |
-| 3. Switchback | 3 (up to x3) | 560, armor 1, volley + slam | 900, armor 2, all three |
-| 4. Jetline | 3 (up to x3) | 1,200, armor 1, slam + charge | 3,600, armor 2, all three. Needs the jet. |
-| 5. Purple Stack | 5 (one x4) | 2,000, armor 2, all three | 9,500, armor 2, all three |
-| 6. Last Stand | 3 (up to x3) | 1,600, armor 2, all three | 11,000, armor 2, all three. Needs the jet. |
+| Lane | Mid-boss | Final boss |
+|---|---|---|
+| 1. First Dune | Camp Captain: 90, Swift (weak Rapid), slam | Red Camp: 180, Armored (weak Heavy), slam + volley |
+| 2. Split Sand | Dune Sergeant: 190, Swarm (weak Spread), slam + volley | Dust Horde: 380, Bulky (weak Pierce), all three |
+| 3. Switchback | Scarlet Banner: 520, Armored (weak Heavy), volley + slam | Scarlet Pack: 900, Swift (weak Rapid), all three |
+| 4. Jetline | Ember Marshal: 1,200, Bulky (weak Pierce), slam + charge | Ember Mob: 9,000, Swarm (weak Spread), all three. Needs the x2 jet. |
+| 5. Purple Stack | Crimson Banner: 2,000, Swift (weak Rapid), all three | Crimson Host: 15,000, Armored (weak Heavy), all three |
+| 6. Last Stand | King's Guard: 1,600, Swarm (weak Spread), all three | Dune King: 22,000, Bulky (weak Pierce), all four specials |
+
+Lanes 1 and 2 can be cleared with only the starting Shot and good gates. Bosses on lanes 1 to 3 attack slower and hit softer.
 
 ## Tests
 
-`npm test` checks gate math, front-rank combat, armor, boss telegraphs and dodging, multiplier rarity, and three reference players on every lane. A skilled run (good gates, the jet, weapons, dodging, and switching guns) wins. A sloppy run that takes the good gates but tanks specials and never switches loses to a boss. A lazy run through red gates dies in a wave. On jet lanes, skipping the jet loses.
+`npm test` checks gate math, front-rank combat, the type chart, boss telegraphs and dodging, multiplier rarity, and reference players on every lane:
+
+- On every lane, at least two weapon families can clear the whole lane alone, and the final boss's counter is one of them.
+- Lanes 1 and 2 can be cleared with Shot only, with or without dodging.
+- A skilled run (good gates, the jet, pickups, dodging, smart switching) wins.
+- From lane 3 on, a run that never dodges or switches loses to a boss.
+- A lazy run through red gates dies in a wave.
+- On lane 4, skipping the jet loses.
 
 `http://127.0.0.1:8765/?smoke=1` auto-plays level 1 with the skilled reference player (it dodges and switches guns) (for the headless check). It is not a menu cheat for later levels.

@@ -11,6 +11,8 @@ import {
   heldWeapon,
   autoPilot,
   BOSS_MOVES,
+  typeTag,
+  BOSS_TYPES,
 } from '../logic.js';
 import {
   FONT,
@@ -233,10 +235,10 @@ export class PlayScene extends Phaser.Scene {
           ? this.add.image(0, 0, ATLAS, 'mid_0').setOrigin(0.5, 0.92)
           : this.add.image(0, 0, 'lr-blob').setOrigin(0.5, 0.72)).setVisible(false),
         anim: { rise: 0, dash: 0, slam: 0 },
-        label: this.add.text(0, 0, wave.name.toUpperCase() + '  ARMOR ' + wave.armor, {
-          fontFamily: FONT, fontSize: '18px', fontStyle: 'bold', color: '#fff0ee',
-          stroke: '#5a0a12', strokeThickness: 4,
-        }).setOrigin(0.5).setDepth(4100).setVisible(false),
+        label: this.add.text(0, 0, this.bossCaption(wave.name, wave.type), {
+          fontFamily: FONT, fontSize: '17px', fontStyle: 'bold', color: '#fff0ee',
+          stroke: '#5a0a12', strokeThickness: 4, align: 'center',
+        }).setOrigin(0.5, 1).setDepth(4100).setVisible(false),
       });
     }
 
@@ -289,6 +291,10 @@ export class PlayScene extends Phaser.Scene {
       fontFamily: FONT, fontSize: '14px', fontStyle: 'bold', color: '#d6e4ff',
       stroke: '#102038', strokeThickness: 3,
     }).setOrigin(0.5).setDepth(4100).setVisible(false);
+    this.bossLabel = this.add.text(0, 0, this.bossCaption(this.world.boss.name, this.world.boss.type), {
+      fontFamily: FONT, fontSize: '19px', fontStyle: 'bold', color: '#fff0ee',
+      stroke: '#5a0a12', strokeThickness: 4, align: 'center',
+    }).setOrigin(0.5, 1).setDepth(4100).setVisible(false);
     this.foeCap = this.add.text(270, 128, this.level.enemyName.toUpperCase(), {
       fontFamily: FONT, fontSize: '14px', fontStyle: 'bold', color: '#ffd0cc',
       stroke: '#5a0a12', strokeThickness: 3,
@@ -542,9 +548,15 @@ export class PlayScene extends Phaser.Scene {
             this.cameras.main.shake(90, st.shake);
             this.shakeCd = 0.16;
           }
-        } else if (a.armor > 0) {
-          // Armor chip: a small grey spark so the player sees light guns bouncing.
-          this.spawnSparks(a.front + 6, this.laneX, 2, 0xc8c8c8, 0.18);
+        }
+        if (a.mult > 1) {
+          // Weakness: gold sparks and a WEAK! callout (throttled).
+          this.spawnSparks(a.front + 8, this.laneX + (Math.random() - 0.5) * 0.3, 3, 0xffd23a, 0.3);
+          this.typeCallout(a, 'WEAK! x' + a.mult.toFixed(1), '#ffe066');
+        } else if (a.mult < 1) {
+          // Resistance: grey bounce sparks and a RESIST callout.
+          this.spawnSparks(a.front + 6, this.laneX, 2, 0xb8b8c0, 0.2);
+          this.typeCallout(a, 'RESIST x' + a.mult.toFixed(1), '#c8ccd8');
         }
       } else if (a.side === 'red' && a.shots > 0) {
         swung = true;
@@ -557,6 +569,14 @@ export class PlayScene extends Phaser.Scene {
       this.lunge = 1;
       this.sfx.attack('swing', this.time.now);
     }
+  }
+
+  typeCallout(a, text, color) {
+    const now = this.time.now;
+    if (now - (this.lastCallout || 0) < 1100) return;
+    this.lastCallout = now;
+    const p = project(a.front + 30, this.laneX, this.camY());
+    this.spawnFloater(clamp(p.x + 40, 90, 450), Math.max(170, p.y - 40), text, color);
   }
 
   spawnVolley(a) {
@@ -1167,6 +1187,11 @@ export class PlayScene extends Phaser.Scene {
     const bp = project(boss.front + 24, 0.02, cam);
     const blobShow = boss.alive > 0.05 && bp.vis && bp.t > 0;
     this.blob.setVisible(blobShow);
+    this.bossLabel.setVisible(blobShow);
+    if (blobShow) {
+      this.bossLabel.setPosition(bp.x, bp.y - Math.max(70, 250 * bp.scale));
+      this.bossLabel.setScale(clamp(bp.scale * 1.1, 0.6, 1));
+    }
     if (blobShow) {
       const sc = bp.scale * grow * (0.72 + 0.28 * frac);
       const pose = this.bossPose(boss, this.bossAnim, bp.scale);
@@ -1202,8 +1227,8 @@ export class PlayScene extends Phaser.Scene {
         mark.img.scaleX *= 1.15;
         mark.img.scaleY *= 1.15;
       }
-      mark.label.setPosition(mp.x, mp.y - Math.max(28, 70 * mp.scale));
-      mark.label.setScale(Math.max(0.45, mp.scale));
+      mark.label.setPosition(mp.x, mp.y - Math.max(50, 190 * mp.scale));
+      mark.label.setScale(clamp(mp.scale, 0.55, 1));
       mark.label.setDepth(4100);
     }
 
@@ -1245,6 +1270,11 @@ export class PlayScene extends Phaser.Scene {
     } else {
       this.leadJet.setVisible(false);
     }
+  }
+
+  bossCaption(name, type) {
+    const t = BOSS_TYPES[type];
+    return String(name).toUpperCase() + (t ? '  [' + t.label + ']\n' + typeTag(type) : '');
   }
 
   /** Atlas frame for a boss: idle, wind-up while telegraphing, strike on landing or swing. */

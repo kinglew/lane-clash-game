@@ -169,25 +169,61 @@ export function resolveHits(shots, damage, pierce, alive) {
 }
 
 /** Only the front ranks can fight at once, so big fights take seconds, not frames. */
-export const FRONT_BASE = 40;
-export const FRONT_ROOT = 4;
+export const FRONT_BASE = 50;
+export const FRONT_ROOT = 5;
 export function frontline(n) {
   const c = Math.max(0, Math.floor(Number(n) || 0));
   return Math.min(c, Math.floor(FRONT_BASE + Math.sqrt(c) * FRONT_ROOT));
 }
 
-/** Damage one hit lands through armor. Light guns only chip armored bosses. */
-export function armorDamage(damage, armor) {
-  const d = Math.max(0, Number(damage) || 0);
-  const a = Math.max(0, Number(armor) || 0);
-  if (a <= 0) return d;
-  return Math.max(d - a, d / ((1 + a) * 2));
+// Strengths and weaknesses. Every weapon belongs to a family; every boss has a
+// type with one weakness (x1.8) and one resistance (x0.5). Everything else is x1.
+// No weapon ever drops below half damage, so any gun can still win with numbers.
+export const FAMILY = {
+  shot: 'basic', bolts: 'rapid', needle: 'rapid', spread: 'spread', lance: 'pierce', ball: 'heavy', mortar: 'heavy',
+};
+export const FAMILY_LABEL = { basic: 'SHOT', rapid: 'RAPID', spread: 'SPREAD', pierce: 'PIERCE', heavy: 'HEAVY' };
+export const WEAK_MULT = 1.8;
+export const RESIST_MULT = 0.5;
+export const BOSS_TYPES = {
+  armored: { id: 'armored', label: 'ARMORED', weak: 'heavy', resist: 'rapid', note: 'thick plate: shells crack it, small rounds bounce' },
+  swarm: { id: 'swarm', label: 'SWARM', weak: 'spread', resist: 'heavy', note: 'many small bodies: spread hits several, shells overkill one' },
+  swift: { id: 'swift', label: 'SWIFT', weak: 'rapid', resist: 'pierce', note: 'quick and dodgy: volume of fire catches it, slow lances miss' },
+  bulky: { id: 'bulky', label: 'BULKY', weak: 'pierce', resist: 'spread', note: 'deep ranks: lances run through, spread pellets scatter' },
+};
+
+export function weaponFamily(weapon) {
+  const id = typeof weapon === 'string' ? weapon : weapon && weapon.id;
+  return FAMILY[id] || 'basic';
 }
 
-/** Per-soldier kills per second for a weapon against a given armor. */
-export function weaponVs(weapon, armor) {
+/** Type multiplier for a weapon against a boss type (1 for plain packs). */
+export function typeMult(weapon, type) {
+  const t = BOSS_TYPES[type];
+  if (!t) return 1;
+  const f = weaponFamily(weapon);
+  if (f === t.weak) return WEAK_MULT;
+  if (f === t.resist) return RESIST_MULT;
+  return 1;
+}
+
+/** Damage per hit after type. */
+export function hitDamage(weapon, type) {
   const w = weapon || WEAPONS.shot;
-  return w.rate * armorDamage(w.damage, armor) * Math.max(1, w.pierce);
+  return w.damage * typeMult(w, type);
+}
+
+/** Per-soldier kills per second for a weapon against a boss type. */
+export function weaponVs(weapon, type) {
+  const w = weapon || WEAPONS.shot;
+  return w.rate * hitDamage(w, type) * Math.max(1, w.pierce);
+}
+
+/** Short tag shown under a boss name, e.g. "WEAK: HEAVY  RESIST: RAPID". */
+export function typeTag(type) {
+  const t = BOSS_TYPES[type];
+  if (!t) return '';
+  return 'WEAK: ' + FAMILY_LABEL[t.weak] + '   RESIST: ' + FAMILY_LABEL[t.resist];
 }
 
 /** Like resolveHits, but carries fractional damage so armor chip still adds up. */
@@ -261,7 +297,7 @@ function inShotRange(blueFront, redFront, redDepth) {
 function bossKit(src, final) {
   const s = src || {};
   return {
-    armor: s.armor != null ? s.armor : (final ? 2 : 1),
+    type: BOSS_TYPES[s.type] ? s.type : (final ? 'armored' : 'swarm'),
     swingDamage: s.swing ? s.swing.damage : (final ? 2 : 1),
     swingRate: s.swing ? s.swing.rate : (final ? 3 : 2.5),
     moves: s.moves || (final ? ['slam', 'volley', 'charge'] : ['slam', 'volley']),
@@ -289,7 +325,7 @@ function makeWave(w, i) {
     dropped: false,
     redAcc: 0,
     dmgAcc: 0,
-    armor: kit ? kit.armor : 0,
+    type: kit ? kit.type : null,
     swingDamage: kit ? kit.swingDamage : RED_ATTACK.damage,
     swingRate: kit ? kit.swingRate : RED_ATTACK.rate,
     kit,
@@ -355,7 +391,7 @@ export function createWorld(level, frontY = START_FRONT) {
       dropped: false,
       redAcc: 0,
       dmgAcc: 0,
-      armor: kit.armor,
+      type: kit.type,
       swingDamage: kit.swingDamage,
       swingRate: kit.swingRate,
       kit,
@@ -385,6 +421,7 @@ function marchUnit(unit, world, step) {
 }
 
 function spawnDrop(world, unit) {
+  if (world.noDrops) return null;
   if (!unit.drop || unit.dropped || !WEAPONS[unit.drop]) return null;
   unit.dropped = true;
   const drop = {
@@ -573,7 +610,7 @@ export function stepWorld(world, dt, laneX) {
       ? fireTicks(frontline(target.alive), target.swingRate, step, target.redAcc || 0)
       : { shots: 0, acc: target.redAcc || 0 };
     target.redAcc = swung.acc;
-    const blueHit = landHits(fired.shots, armorDamage(wpn.damage, target.armor), wpn.pierce, target.alive, target.dmgAcc);
+    const blueHit = landHits(fired.shots, hitDamage(wpn, target.type), wpn.pierce, target.alive, target.dmgAcc);
     const redHit = resolveHits(swung.shots, target.swingDamage, 1, world.count);
     target.alive = blueHit.left;
     target.dmgAcc = blueHit.acc;
@@ -586,7 +623,8 @@ export function stepWorld(world, dt, laneX) {
         weapon: wpn.id,
         boss: !!target.final,
         mid: !!target.mid,
-        armor: target.armor,
+        mult: typeMult(wpn, target.type),
+        type: target.type,
         id: target.final ? 'boss' : target.id,
         front: target.front,
       });
@@ -643,14 +681,14 @@ export function nextFoe(world, reach = 700) {
   return best;
 }
 
-/** Best held slot against an armor value. */
-export function bestSlot(loadout, armor) {
+/** Best held slot against a boss type (null for plain packs). */
+export function bestSlot(loadout, type) {
   let best = loadout.equipped;
   let score = -1;
   for (let i = 0; i < loadout.slots.length; i++) {
     const id = loadout.slots[i];
     if (!id) continue;
-    const s = weaponVs(weaponById(id), armor);
+    const s = weaponVs(weaponById(id), type);
     if (s > score + 1e-9) { score = s; best = i; }
   }
   return best;
@@ -700,7 +738,7 @@ export function autoPilot(world, level, plan, lane) {
   let slot = world.loadout.equipped;
   if (plan.smart) {
     const foe = nextFoe(world);
-    if (foe) slot = bestSlot(world.loadout, foe.armor);
+    if (foe) slot = bestSlot(world.loadout, foe.type);
   }
   return { lane: target, slot };
 }
@@ -721,6 +759,18 @@ export function playThrough(level, indices, wantJet, wantWeapon = false, opts = 
     smart: !!o.smart,
   };
   const world = createWorld(level, START_FRONT);
+  if (o.arm) {
+    // Test harness: fight the whole lane with a fixed rack and no pickups.
+    const ids = [].concat(o.arm).filter((id) => WEAPONS[id]).slice(0, SLOT_CAP);
+    world.loadout.slots = ids.concat(Array(SLOT_CAP - ids.length).fill(null));
+    world.loadout.equipped = 0;
+    world.weapon = heldWeapon(world.loadout);
+    world.pickups = [];
+    world.pad.resolved = true;
+    world.noDrops = true;
+    plan.weapon = false;
+    plan.drops = false;
+  }
   let lane = 0;
   let guard = 0;
   while (!world.won && !world.lost && guard < 1200000) {
