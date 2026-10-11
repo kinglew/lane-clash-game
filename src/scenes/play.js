@@ -172,11 +172,11 @@ export class PlayScene extends Phaser.Scene {
     this.rows = this.level.rows.map((row, index) => {
       const labels = row.gates.map(() => this.add.text(0, 0, '', {
         fontFamily: FONT,
-        fontSize: '30px',
+        fontSize: '32px',
         fontStyle: 'bold',
         color: '#ffffff',
         stroke: '#1a1020',
-        strokeThickness: 4,
+        strokeThickness: 6,
       }).setOrigin(0.5).setVisible(false));
       return {
         y: row.y,
@@ -1140,7 +1140,7 @@ export class PlayScene extends Phaser.Scene {
         const label = row.labels[i];
         label.setText(opLabel(row.gates[i]));
         label.setPosition(cx, mid.y);
-        label.setScale(Math.max(0.42, mid.scale * 1.05));
+        label.setScale(Math.max(0.55, mid.scale * 1.1));
         label.setAlpha(alpha);
         label.setVisible(true);
         label.setDepth(121 + mid.y);

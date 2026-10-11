@@ -18,7 +18,7 @@ export function sub(value) {
 
 export function opLabel(op) {
   switch (op.kind) {
-    case 'mul': return 'x' + op.value;
+    case 'mul': return '\u00d7' + op.value; // multiplication sign, not the letter x
     case 'add': return '+' + op.value;
     case 'div': return '/' + op.value;
     case 'sub': return '-' + op.value;
@@ -332,6 +332,7 @@ function makeWave(w, i) {
     name: w.name || '',
     drop: w.drop || null,
     dropX: w.dropX != null ? w.dropX : (w.mid ? -0.72 : 0.82),
+    dropR: w.dropR || 0.16,
     dropped: false,
     redAcc: 0,
     dmgAcc: 0,
@@ -362,6 +363,9 @@ export function createWorld(level, frontY = START_FRONT) {
   const kit = bossKit(level.boss, true);
   return {
     count: level.start,
+    // The cannon keeps adding soldiers while you run (per second).
+    cannon: Math.max(0, Number(level.cannon) || 0),
+    cannonAcc: 0,
     frontY,
     laneX: 0,
     time: 0,
@@ -437,7 +441,7 @@ function spawnDrop(world, unit) {
   const drop = {
     y: world.frontY + 190,
     x: unit.dropX,
-    radius: 0.16,
+    radius: unit.dropR || 0.16,
     id: unit.drop,
     resolved: false,
     taken: false,
@@ -568,6 +572,15 @@ export function stepWorld(world, dt, laneX) {
   const speed = touching ? RUN_SPEED * PUSH_MULT : RUN_SPEED;
   const prev = world.frontY;
   world.frontY += speed * step;
+  if (world.cannon > 0 && world.count > 0) {
+    world.cannonAcc += world.cannon * step;
+    const add = Math.floor(world.cannonAcc);
+    if (add > 0) {
+      world.cannonAcc -= add;
+      world.count = Math.min(COUNT_CAP, world.count + add);
+      events.cannon = add;
+    }
+  }
 
   for (const u of units) marchUnit(u, world, step);
 
@@ -800,6 +813,69 @@ export function playThrough(level, indices, wantJet, wantWeapon = false, opts = 
     const d = aim.lane - lane;
     if (Math.abs(d) <= maxStep) lane = aim.lane;
     else lane += Math.sign(d) * maxStep;
+    stepWorld(world, dt, lane);
+    if (world.frontY > level.boss.y + 2500) break;
+  }
+  world.finalLane = lane;
+  return world;
+}
+
+// ---------------------------------------------------------------------------
+// Casual player model, for balance tests. Much weaker than autoPilot:
+// - reacts ~0.35 s late (aims where it wanted to be 0.35 s ago),
+// - has a lateral aiming error per gate row,
+// - gives up on ~30% of off-center gates and takes whatever is in front,
+// - never dodges specials and never switches guns by hand (auto-equip only),
+// - ignores weapon pads/drops unless it happens to run through them,
+// - goes for the jet only when it is near the middle (or a coin flip).
+export function seededRandom(seed) {
+  let s = (Number(seed) >>> 0) || 1;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export function casualPlay(level, seed = 1, opts = {}) {
+  const rnd = seededRandom(seed);
+  const delay = opts.delay != null ? opts.delay : 0.35;
+  const err = opts.error != null ? opts.error : 0.1;
+  const giveUp = opts.giveUp != null ? opts.giveUp : 0.3;
+  const dt = opts.dt || 1 / 60;
+  const world = createWorld(level, START_FRONT);
+  const plan = level.proofWin.gates;
+  // Decide per row up front: aim lane (with error), or give up and drift.
+  const rowAim = level.rows.map((row, i) => {
+    const want = laneCenter(plan[i], row.gates.length);
+    const offCenter = Math.abs(want) > 0.3;
+    if (offCenter && rnd() < giveUp) return null;
+    return want + (rnd() * 2 - 1) * err;
+  });
+  const takeJet = Math.abs(level.jet.x) < 0.3 || rnd() < 0.5;
+  let lane = 0;
+  let rest = (rnd() * 2 - 1) * 0.15;
+  const history = [];
+  let guard = 0;
+  while (!world.won && !world.lost && guard < 400000) {
+    guard += 1;
+    let intent = rest;
+    const options = [];
+    for (const row of world.rows) {
+      if (!row.triggered && row.y > world.frontY && row.y - world.frontY < 900) options.push({ y: row.y, lane: rowAim[row.index] });
+    }
+    if (takeJet && !world.jet.resolved && world.jet.y > world.frontY) options.push({ y: world.jet.y, lane: level.jet.x });
+    options.sort((a, b) => a.y - b.y);
+    if (options.length && options[0].lane !== null) intent = options[0].lane;
+    else if (options.length) intent = lane; // gave up: keep going straight
+    history.push({ t: world.time, intent });
+    while (history.length > 1 && history[1].t <= world.time - delay) history.shift();
+    const aim = Math.max(-LANE_CLAMP, Math.min(LANE_CLAMP, history[0].intent));
+    const step = STEER_SPEED * dt;
+    const d = aim - lane;
+    lane = Math.abs(d) <= step ? aim : lane + Math.sign(d) * step;
     stepWorld(world, dt, lane);
     if (world.frontY > level.boss.y + 2500) break;
   }

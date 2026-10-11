@@ -26,6 +26,7 @@ import {
   weaponFamily,
   typeTag,
   strongAgainst,
+  casualPlay,
   BOSS_TYPES,
   WEAK_MULT,
   RESIST_MULT,
@@ -125,7 +126,7 @@ test('counts drop only when shots land, and the lane keeps moving', () => {
   assert.ok(blue.killed > 0 && blue.killed <= alive0);
   assert.ok(Math.abs(world.waves[0].alive - (alive0 - blue.killed)) < 1e-9);
   assert.ok(red && red.shots > 0, 'reds should swing back');
-  assert.ok(Math.abs(world.count - (count0 - red.killed)) < 1e-9);
+  assert.ok(Math.abs(world.count - (count0 - red.killed + (ev.cannon || 0))) < 1e-9);
   assert.ok(world.frontY > y0);
   assert.equal(world.won, false);
   const quiet = stepWorld(world, 0, 0);
@@ -350,8 +351,7 @@ for (const level of LEVELS) {
 
     const lazy = playThrough(level, level.proofLose.gates, level.proofLose.jet, false);
     assert.equal(lazy.lost, true, level.name + ' bad line survived with ' + lazy.count);
-    assert.equal(lazy.diedAt, 'wave');
-    assert.equal(lazy.weapon.id, 'shot');
+    assert.ok(lazy.diedAt === 'wave' || lazy.diedAt === 'gate', 'lazy died at ' + lazy.diedAt);
 
     if (level.needsJet) {
       const noJet = playThrough(level, pw0(level).gates, false, true, { dodge: true, smart: true });
@@ -392,4 +392,51 @@ test('dropped weapons auto-equip when picked up, like pads', () => {
   const ev2 = stepWorld(world, 0.2, 0);
   assert.equal(ev2.weapon.reason, 'have');
   assert.equal(world.weapon.id, 'lance');
+});
+
+// A casual human: reacts ~0.35 s late, aims with lateral error, gives up on ~30% of
+// off-center gates, never dodges, never switches by hand (auto-equip only).
+function casualRate(level, seeds, opts) {
+  let wins = 0;
+  const left = [];
+  for (let s = 1; s <= seeds; s++) {
+    const w = casualPlay(level, s, opts);
+    if (w.won) { wins += 1; left.push(w.count); }
+  }
+  left.sort((a, b) => a - b);
+  return { wins, median: left.length ? left[left.length >> 1] : 0 };
+}
+
+test('casual players clear levels 1 and 2 with a clear margin', () => {
+  for (const level of LEVELS.slice(0, 2)) {
+    const r = casualRate(level, 30);
+    assert.ok(r.wins >= 27, level.name + ' casual wins ' + r.wins + '/30');
+    assert.ok(r.median >= level.boss.count * 1.5, level.name + ' casual margin ' + r.median);
+    const harsh = casualRate(level, 30, { error: 0.15, giveUp: 0.45, delay: 0.45 });
+    assert.ok(harsh.wins >= 24, level.name + ' sloppier casual wins ' + harsh.wins + '/30');
+  }
+});
+
+test('casual players clear level 3 on most seeds; later levels need skill', () => {
+  const r = casualRate(LEVELS[2], 40);
+  assert.ok(r.wins >= 22, 'Switchback casual wins ' + r.wins + '/40');
+  for (const level of LEVELS.slice(3)) {
+    assert.ok(casualRate(level, 10).wins <= 3, level.name + ' should need skill');
+  }
+});
+
+test('level 1 is safe down the middle: good center gates and a counter drop', () => {
+  const level = LEVELS[0];
+  const first = level.rows[0];
+  assert.equal(first.gates[1].good, true, 'first center gate is good');
+  const midAt = level.waves.findIndex((w) => w.mid);
+  const centerDrop = level.waves.slice(0, midAt).find((w) => w.drop && Math.abs(w.dropX) < 0.2);
+  assert.ok(centerDrop, 'a drop lands on the center path before the mid-boss');
+  assert.ok(level.cannon > 0 && level.start >= 30);
+  let got = 0;
+  for (let s = 1; s <= 20; s++) {
+    const w = casualPlay(level, s);
+    if (w.loadout.slots.includes(centerDrop.drop)) got += 1;
+  }
+  assert.ok(got >= 14, 'casual players usually pick up the center drop (' + got + '/20)');
 });

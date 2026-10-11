@@ -1,8 +1,9 @@
 export function gateColor(op) {
+  // Distinct hues so a gate never reads like an enemy count: red = bad,
+  // green = add, gold = multiply.
   if (!op.good) return 0xd31838;
-  if (op.kind === 'mul' && op.value <= 2) return 0x2f6bff;
-  if (op.kind === 'mul') return 0x7a3cf0;
-  return 0x5460ea;
+  if (op.kind === 'mul') return 0xe39a12;
+  return 0x249c52;
 }
 
 export function paintBanner(g, x, y, w, h, op, hot = false, alpha = 1) {

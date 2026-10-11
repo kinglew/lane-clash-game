@@ -48,9 +48,9 @@ export class MenuScene extends Phaser.Scene {
       stroke: '#1a120c',
       strokeThickness: 5,
     };
-    this.add.text(150, 360, 'x2', { ...label, fontSize: '32px' }).setOrigin(0.5);
+    this.add.text(150, 360, '\u00d72', { ...label, fontSize: '32px' }).setOrigin(0.5);
     this.add.text(390, 360, '/2', { ...label, fontSize: '32px' }).setOrigin(0.5);
-    this.add.text(270, 450, 'x8', { ...label, fontSize: '40px' }).setOrigin(0.5);
+    this.add.text(270, 450, '\u00d78', { ...label, fontSize: '40px' }).setOrigin(0.5);
 
     const jet = art ? this.add.image(270, 540, ATLAS, 'jet').setScale(0.8) : this.add.image(270, 540, 'lr-jet').setScale(0.95);
     this.tweens.add({
