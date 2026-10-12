@@ -76,6 +76,19 @@ The cannon still fires new soldiers on its own and the lane never pauses. Beatin
 
 On-screen soldiers are capped around 100 sprites, and shots, sparks, shockwaves, and boss rocks come from fixed pools, so big numbers stay fast. The number itself is the real count.
 
+## Wide lane and five gate columns
+
+The lane now fills the screen instead of a narrow portrait strip. `fitCamera`
+(src/view.js) still fits the 960-unit play height, then sizes the lane to ~94% of
+the visible half-width (lane half-width 236 world units before, up to 860 now,
+e.g. ~800 at 1920x1080 and ~254 on a 390x844 phone), uses a mild perspective
+taper (far edge 52% of near, was 25%) and draws everything bigger (`VIEW.unit`,
+1.12-1.9x). Lane positions stay in lane units (-1..1), so logic, steering,
+`crowdHalfAt` pickups and tests are unchanged by screen size; mouse/touch maps
+through the same projection. Main gate rows use 5 columns (3 for a few short
+rows); fork branches use 2 columns. Level 1 keeps a good centre gate on every
+row.
+
 ## Branching paths
 
 At each fork the lane splits into 2 (sometimes 3) side-by-side paths separated by

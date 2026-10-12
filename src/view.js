@@ -15,6 +15,11 @@ export function fitCamera(scene) {
   cam.centerOn(BASE_W / 2, BASE_H / 2);
   const hw = w / z / 2;
   const hh = h / z / 2;
+  // Wide lane: fill most of the visible width (landscape gets a much wider lane),
+  // with a milder perspective taper and everything drawn bigger (VIEW.unit).
+  VIEW.nearHalf = Math.max(236, Math.min(hw * 0.94, 860));
+  VIEW.farHalf = VIEW.nearHalf * 0.52;
+  VIEW.unit = Math.max(1.12, Math.min(1.9, VIEW.nearHalf / 236));
   return { left: BASE_W / 2 - hw, right: BASE_W / 2 + hw, top: BASE_H / 2 - hh, bottom: BASE_H / 2 + hh, zoom: z };
 }
 
@@ -27,7 +32,8 @@ export const VIEW = {
   bottomY: 990,
   depth: 1020,
   nearHalf: 236,
-  farHalf: 58,
+  farHalf: 123,
+  unit: 1.12, // size multiplier for everything drawn in the lane
   centerX: 270,
 };
 
@@ -50,7 +56,7 @@ export function project(worldY, laneX, camY) {
   const y = VIEW.bottomY - (VIEW.bottomY - VIEW.horizonY) * ease;
   const half = VIEW.nearHalf + (VIEW.farHalf - VIEW.nearHalf) * ease;
   const x = VIEW.centerX + laneX * half;
-  const scale = 1 - ease * 0.76;
+  const scale = (1 - ease * 0.62) * VIEW.unit;
   return { x, y, half, scale, vis, t: tRaw };
 }
 

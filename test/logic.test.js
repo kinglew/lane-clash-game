@@ -265,7 +265,7 @@ test('multipliers are rare, small, and sit next to bad gates', () => {
     const bad = gates.filter((g) => !g.good).length;
     assert.ok(adds > muls.length && bad > muls.length, level.name + ' should be mostly add and bad gates');
     for (const row of level.rows) {
-      assert.ok(row.gates.length >= 2 && row.gates.length <= 4);
+      assert.ok(row.gates.length >= 2 && row.gates.length <= 5);
       row.gates.forEach((g, i) => {
         if (g.kind !== 'mul') return;
         const edge = i === 0 || i === row.gates.length - 1;
@@ -653,7 +653,10 @@ test('no strictly dominant branch: the right path depends on the gun you hold or
     w.rows.forEach((r) => { if (r.fork !== 1) r.triggered = true; });
     w.jet.resolved = true; w.cannon = 0; w.count = count;
     w.pickups = [];
-    const lane = m.branchCenter(2, b);
+    const row = w.rows.find((r) => r.fork === 1 && r.branch === b);
+    let best = 0;
+    row.gates.forEach((g, i) => { if (m.applyOp(count, g) > m.applyOp(count, row.gates[best])) best = i; });
+    const lane = m.gateCenter(row, best);
     while (w.frontY < L2.forks[1].y1 + 300 && !w.lost) m.stepWorld(w, 1 / 60, lane);
     return w.lost ? 0 : w.count;
   };
