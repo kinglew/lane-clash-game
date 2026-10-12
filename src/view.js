@@ -20,6 +20,8 @@ export function fitCamera(scene) {
   VIEW.nearHalf = Math.max(236, Math.min(hw * 0.94, 860));
   VIEW.farHalf = VIEW.nearHalf * 0.52;
   VIEW.unit = Math.max(1.12, Math.min(1.9, VIEW.nearHalf / 236));
+  // Portrait: lift the crowd/cannon a little so the slim slot bar at the bottom edge is clear.
+  VIEW.bottomY = hw * 2 > 760 ? 990 : Math.min(990, BASE_H / 2 + hh - 70);
   return { left: BASE_W / 2 - hw, right: BASE_W / 2 + hw, top: BASE_H / 2 - hh, bottom: BASE_H / 2 + hh, zoom: z };
 }
 

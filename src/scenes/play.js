@@ -330,8 +330,11 @@ export class PlayScene extends Phaser.Scene {
     bindButtons(this, () => {
       const list = [];
       if (this.mode === 'overlay' && this.overlayButtons) {
+        // Arm the result buttons only after the screen has been visible a moment, so a
+        // steering click that lands as the run ends cannot hit MENU by accident.
+        if (this.time.now - (this.overlayAt || 0) < 700) return list;
         list.push({ obj: this.overlayButtons.primary, fn: () => this.confirm(), pad: 10 });
-        list.push({ obj: this.overlayButtons.menu, fn: () => this.toMenu(), pad: 14 });
+        list.push({ obj: this.overlayButtons.menu, fn: () => this.toMenu(), pad: 6 });
         return list;
       }
       list.push({ obj: this.muteZone, fn: () => this.toggleMute() });
@@ -393,12 +396,21 @@ export class PlayScene extends Phaser.Scene {
     this.draw();
   }
 
+  pressOnSlot(p) {
+    if (!this.slotPos) return false;
+    return this.slotPos.some((s) => Math.abs(p.worldX - s.x) <= s.w / 2 && Math.abs(p.worldY - s.y) <= s.h / 2);
+  }
+
   aimFromPointer(p) {
     if (this.mode === 'overlay') return;
     if (this.uiHitAt && this.time.now - this.uiHitAt < 50) return; // press was a button
     const ui = this.ui;
     if (p.worldY < ui.top + 70 && p.worldX > ui.right - 170) return;
-    if (p.worldY > this.slotY - 30) return;
+    // Only a press that lands ON a slot button is a button press; drags and presses
+    // anywhere else on the playfield always steer.
+    if (!p.isDown || p.getDuration() > 30 || !this.pressOnSlot(p)) {
+      // fall through to steering
+    } else return;
     this.pointerStamp = this.time.now;
     this.pointerActive = true;
     this.pointerLane = laneFromScreen(p.worldX);
@@ -422,13 +434,27 @@ export class PlayScene extends Phaser.Scene {
     this.muteZone.setPosition(right - 52, top + 28);
     this.fsText.setPosition(right - 92, top + 14);
     this.fsZone.setPosition(right - 112, top + 28);
-    // Slot buttons sit above the bottom edge, with room for the type icons below.
-    this.slotY = Math.max(860, bottom - 66);
+    // Slot rack stays out of the steering area: a vertical rack on the bottom-left
+    // edge in landscape, a slim bar along the very bottom edge on portrait phones.
+    this.rackVertical = right - left > 760;
+    this.slotPos = [];
     for (let i = 0; i < 3; i++) {
-      const x = 270 + (i - 1) * 156;
-      this.slotZones[i].setPosition(x, this.slotY);
-      this.slotTexts[i].setPosition(x, this.slotY);
+      const pos = this.rackVertical
+        ? { x: left + 84, y: bottom - 46 - (2 - i) * 52, w: 140, h: 42 }
+        : { x: 270 + (i - 1) * 172, y: bottom - 24, w: 164, h: 36 };
+      this.slotPos.push(pos);
+      this.slotZones[i].setPosition(pos.x, pos.y).setSize(pos.w, pos.h);
+      if (this.slotZones[i].input) this.slotZones[i].input.hitArea.setTo(0, 0, pos.w, pos.h);
+      this.slotTexts[i].setPosition(pos.x - (this.rackVertical ? 10 : 12), pos.y);
     }
+    this.slotY = this.slotPos[0].y;
+  }
+
+  /** Keep a bottom-anchored boss label (and its icon above it) below the top HUD band. */
+  labelBelowHud(y, label) {
+    const band = (this.hudTop || 0) + 78; // level name + progress bar + buttons
+    const need = band + label.displayHeight + 34 * label.scaleY; // room for the type icon
+    return Math.max(y, need);
   }
 
   toggleFullscreen() {
@@ -528,6 +554,8 @@ export class PlayScene extends Phaser.Scene {
       log: this.log,
       slots: this.world.loadout.slots.slice(),
       front: Math.round(this.frontY),
+      lane: Math.round(this.laneX * 1000) / 1000,
+      equipped: this.world.loadout.equipped,
       forks: this.world.forks.map((f) => f.chosen),
       equipped: this.world.loadout.equipped,
     });
@@ -960,6 +988,7 @@ export class PlayScene extends Phaser.Scene {
     }).setOrigin(0.5).setInteractive({ useHandCursor: true }), 5003);
     this.overlayObjs = objs;
     this.overlayButtons = { primary: btn, menu };
+    this.overlayAt = this.time.now;
     this.publishButtons();
   }
 
@@ -1459,8 +1488,8 @@ export class PlayScene extends Phaser.Scene {
     this.blob.setVisible(blobShow);
     this.bossLabel.setVisible(blobShow);
     if (blobShow) {
-      this.bossLabel.setPosition(bp.x, bp.y - Math.max(70, 250 * bp.scale));
-      this.bossLabel.setScale(clamp(bp.scale * 1.1, 0.6, 1));
+      this.bossLabel.setScale(clamp(bp.scale * 1.1, 0.85, 1.15));
+      this.bossLabel.setPosition(bp.x, this.labelBelowHud(bp.y - Math.max(70, 250 * bp.scale), this.bossLabel));
       this.bossIcon.setPosition(bp.x, this.bossLabel.y - this.bossLabel.displayHeight - 16 * this.bossLabel.scaleY);
       this.bossIcon.setScale(this.bossLabel.scaleY * 0.9);
     }
@@ -1501,7 +1530,7 @@ export class PlayScene extends Phaser.Scene {
         mark.img.scaleX *= 1.15;
         mark.img.scaleY *= 1.15;
       }
-      mark.label.setPosition(mp.x, mp.y - Math.max(50, 190 * mp.scale));
+      mark.label.setPosition(mp.x, this.labelBelowHud(mp.y - Math.max(50, 190 * mp.scale), mark.label));
       mark.label.setScale(clamp(mp.scale, 0.55, 1));
       mark.icon.setVisible(true);
       mark.icon.setPosition(mark.label.x, mark.label.y - mark.label.displayHeight - 14 * mark.label.scaleY);
@@ -1867,13 +1896,13 @@ export class PlayScene extends Phaser.Scene {
     this.countText.setScale(this.pop);
     this.countText.setText(String(shown(this.count)));
     for (let i = 0; i < 3; i++) {
-      const x = 270 + (i - 1) * 156;
+      const sp = this.slotPos[i];
+      const x = sp.x;
       const on = this.world.loadout.equipped === i && !!this.world.loadout.slots[i];
-      g.fillStyle(on ? 0x2a62e0 : 0x1b2430, 0.92);
-      const sy = this.slotY - 20;
-      g.fillRoundedRect(x - 68, sy, 136, 40, 8);
+      g.fillStyle(on ? 0x2a62e0 : 0x1b2430, 0.88);
+      g.fillRoundedRect(x - sp.w / 2, sp.y - sp.h / 2, sp.w, sp.h, 8);
       g.lineStyle(3, on ? 0xffe7a3 : 0x3d4e60, 1);
-      g.strokeRoundedRect(x - 68, sy, 136, 40, 8);
+      g.strokeRoundedRect(x - sp.w / 2, sp.y - sp.h / 2, sp.w, sp.h, 8);
       g.lineStyle(0, 0, 0);
       const id = this.world.loadout.slots[i];
       // Under the slot: icons of the boss types this gun beats (best first);
@@ -1887,7 +1916,8 @@ export class PlayScene extends Phaser.Scene {
         if (k >= n) { ic.setVisible(false); continue; }
         if (ic.texture.key !== keys[k]) ic.setTexture(keys[k]);
         ic.setVisible(true);
-        ic.setPosition(x + (k - (n - 1) / 2) * 28, this.slotY + 38);
+        // Icons ride inside the right end of the button so the rack stays compact.
+        ic.setPosition(x + sp.w / 2 - 14 - (n - 1 - k) * 22, sp.y).setScale(0.42);
         ic.setAlpha(on ? 1 : 0.75);
       }
       const name = id ? weaponById(id).name.toUpperCase() : '—';
