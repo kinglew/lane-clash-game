@@ -19,7 +19,7 @@ export const LEVELS = [
     rows: [
       { y: 560, gates: [add(12), add(20), sub(10)] },
       { y: 1600, gates: [add(16), mul(2), add(20), sub(20)] },
-      { y: 2700, gates: [add(40), sub(30), add(24)] },
+      { y: 2450, gates: [add(40), sub(30), add(24)] },
       { y: 3900, gates: [sub(40), add(50), div(2)] },
       { y: 5200, gates: [div(2), add(40), mul(2), add(30)] },
       { y: 6500, gates: [add(80), sub(60)] },
@@ -32,6 +32,12 @@ export const LEVELS = [
         type: 'swift', swing: { damage: 1, rate: 1.6 }, moves: ['slam'], every: 2.6, wind: 1.1, power: 0.6 },
       { y: 5800, count: 44 },
       { y: 7200, count: 56 },
+    ],
+    forks: [
+      { y0: 2760, y1: 3260, branches: [
+        { title: 'TROOPS', rows: [{ y: 3000, gates: [add(24)] }] },
+        { title: 'ARMORY', waves: [{ y: 2980, count: 14, drop: 'ball' }], rows: [{ y: 3180, gates: [add(8)] }] },
+      ] },
     ],
     jet: { y: 6100, x: 0, radius: 0.3, op: add(60) },
     weapon: { y: 1250, x: 0.78, radius: 0.16, id: 'bolts' },
@@ -52,7 +58,7 @@ export const LEVELS = [
     rows: [
       { y: 540, gates: [add(20), add(38), div(2)] },
       { y: 1600, gates: [add(50), sub(50), mul(2)] },
-      { y: 2700, gates: [add(62), div(2)] },
+      { y: 2450, gates: [add(62), div(2)] },
       { y: 3900, gates: [div(2), add(75), sub(62), add(25)] },
       { y: 5200, gates: [sub(40), add(60), mul(2)] },
       { y: 6500, gates: [add(100), sub(75), add(50)] },
@@ -69,6 +75,16 @@ export const LEVELS = [
       { y: 7200, count: 88 },
       { y: 8600, count: 112 },
       { y: 10000, count: 144 },
+    ],
+    forks: [
+      { y0: 2760, y1: 3260, branches: [
+        { title: 'SPREAD', waves: [{ y: 2960, count: 14, drop: 'spread' }] },
+        { title: 'TROOPS', rows: [{ y: 3020, gates: [add(36)] }] },
+      ] },
+      { y0: 6000, y1: 6440, branches: [
+        { title: 'SAFE', rows: [{ y: 6200, gates: [add(60)] }] },
+        { title: 'RISKY', rows: [{ y: 6150, gates: [mul(2)] }], waves: [{ y: 6380, count: 90 }] },
+      ] },
     ],
     jet: { y: 8800, x: -0.55, radius: 0.24, op: add(150) },
     weapon: { y: 1200, x: 0.78, radius: 0.16, id: 'spread' },
@@ -89,10 +105,10 @@ export const LEVELS = [
     rows: [
       { y: 560, gates: [add(36), add(60), sub(24)] },
       { y: 1700, gates: [mul(2), add(45), div(2)] },
-      { y: 2900, gates: [sub(90), add(90), div(2)] },
+      { y: 2650, gates: [sub(90), add(90), div(2)] },
       { y: 4200, gates: [div(2), add(60), mul(3), sub(60)] },
       { y: 5600, gates: [add(120), div(2), add(75)] },
-      { y: 7000, gates: [sub(180), add(150), div(2)] },
+      { y: 6750, gates: [sub(180), add(150), div(2)] },
       { y: 8400, gates: [mul(2), sub(150), div(2), add(120)] },
       { y: 9800, gates: [add(180), sub(240)] },
     ],
@@ -106,6 +122,16 @@ export const LEVELS = [
       { y: 7700, count: 216 },
       { y: 9100, count: 280 },
       { y: 10500, count: 312 },
+    ],
+    forks: [
+      { y0: 2960, y1: 3440, branches: [
+        { title: 'CANNON', waves: [{ y: 3160, count: 30, drop: 'ball' }] },
+        { title: 'TROOPS', rows: [{ y: 3200, gates: [add(80)] }] },
+      ] },
+      { y0: 7060, y1: 7620, branches: [
+        { title: 'SAFE', rows: [{ y: 7300, gates: [add(100)] }] },
+        { title: 'RISKY', waves: [{ y: 7220, count: 180, drop: 'needle' }], rows: [{ y: 7480, gates: [mul(2)] }] },
+      ] },
     ],
     jet: { y: 9000, x: 0.15, radius: 0.22, op: add(240) },
     weapon: { y: 1300, x: 0.78, radius: 0.16, id: 'ball' },
@@ -125,11 +151,11 @@ export const LEVELS = [
     rows: [
       { y: 520, gates: [add(140), sub(70), div(2)] },
       { y: 1600, gates: [mul(2), sub(140), add(175)] },
-      { y: 2800, gates: [add(210), div(2)] },
+      { y: 2550, gates: [add(210), div(2)] },
       { y: 4100, gates: [div(2), add(210), sub(280), add(140)] },
       { y: 5400, gates: [mul(2), sub(420), div(2)] },
       { y: 6800, gates: [add(280), sub(280), add(210)] },
-      { y: 8200, gates: [sub(560), mul(3), div(2), add(210)] },
+      { y: 7950, gates: [sub(560), mul(3), div(2), add(210)] },
       { y: 9600, gates: [add(420), div(2)] },
       { y: 11000, gates: [div(2), sub(700), add(560)] },
     ],
@@ -145,10 +171,21 @@ export const LEVELS = [
       { y: 10300, count: 950 },
       { y: 11800, count: 1200 },
     ],
+    forks: [
+      { y0: 2860, y1: 3340, branches: [
+        { title: 'TROOPS', rows: [{ y: 3100, gates: [add(80)] }], waves: [{ y: 3280, count: 90 }] },
+        { title: 'LANCE', waves: [{ y: 3060, count: 150, drop: 'lance' }] },
+      ] },
+      { y0: 8260, y1: 8840, branches: [
+        { title: 'SAFE', rows: [{ y: 8500, gates: [add(150)] }], waves: [{ y: 8780, count: 200 }] },
+        { title: 'SPREAD', waves: [{ y: 8440, count: 420, drop: 'spread' }] },
+        { title: 'GAMBLE', rows: [{ y: 8420, gates: [mul(2)] }], waves: [{ y: 8760, count: 650 }] },
+      ] },
+    ],
     jet: { y: 10600, x: -0.82, radius: 0.16, op: mul(2) },
     weapon: { y: 2100, x: 0.72, radius: 0.16, id: 'bolts' },
     boss: { y: 13200, count: 9000, name: 'Ember Mob',
-      type: 'swarm', swing: { damage: 2, rate: 3 }, moves: ['volley', 'charge', 'slam'], every: 1.2, wind: 0.75, power: 3 },
+      type: 'swarm', swing: { damage: 2, rate: 3 }, moves: ['volley', 'charge', 'slam'], every: 1.2, wind: 0.75, power: 3.6 },
     endY: 13200,
     proofWin: { gates: [0, 0, 0, 1, 0, 0, 1, 0, 2], jet: true, weapon: true },
     proofLose: { gates: [1, 1, 1, 2, 2, 1, 2, 1, 1], jet: false, weapon: false },
@@ -169,9 +206,9 @@ export const LEVELS = [
       { y: 4100, gates: [mul(3), sub(320), div(2), add(240)] },
       { y: 4900, gates: [add(320), div(2), add(160)] },
       { y: 5700, gates: [sub(480), add(400)] },
-      { y: 6600, gates: [div(2), sub(400), mul(2), add(320)] },
+      { y: 6350, gates: [div(2), sub(400), mul(2), add(320)] },
       { y: 8000, gates: [add(480), div(2), sub(320)] },
-      { y: 9400, gates: [sub(640), add(560)] },
+      { y: 9150, gates: [sub(640), add(560)] },
       { y: 11000, gates: [div(2), mul(4), sub(1200), add(640)] },
     ],
     waves: [
@@ -188,6 +225,17 @@ export const LEVELS = [
       { y: 8700, count: 1360 },
       { y: 10200, count: 1600 },
       { y: 12200, count: 2400 },
+    ],
+    forks: [
+      { y0: 6700, y1: 7220, branches: [
+        { title: 'SAFE', rows: [{ y: 6950, gates: [add(300)] }] },
+        { title: 'GAMBLE', rows: [{ y: 6900, gates: [mul(2)] }], waves: [{ y: 7160, count: 900 }] },
+      ] },
+      { y0: 9480, y1: 10120, branches: [
+        { title: 'SAFE', rows: [{ y: 9750, gates: [add(500)] }] },
+        { title: 'CANNON', waves: [{ y: 9700, count: 900, drop: 'ball' }] },
+        { title: 'GAMBLE', rows: [{ y: 9650, gates: [mul(2)] }], waves: [{ y: 10000, count: 1300 }] },
+      ] },
     ],
     jet: { y: 3100, x: 0, radius: 0.24, op: add(320) },
     weapon: { y: 2900, x: 0.8, radius: 0.16, id: 'spread' },
@@ -210,8 +258,8 @@ export const LEVELS = [
       { y: 2800, gates: [add(480), sub(480), add(240)] },
       { y: 4100, gates: [div(2), add(640), sub(640), add(320)] },
       { y: 5400, gates: [mul(2), div(2), sub(960)] },
-      { y: 6800, gates: [add(800), sub(800), add(480)] },
-      { y: 8200, gates: [sub(1600), div(2), mul(3), add(640)] },
+      { y: 6550, gates: [add(800), sub(800), add(480)] },
+      { y: 7950, gates: [sub(1600), div(2), mul(3), add(640)] },
       { y: 9600, gates: [add(960), div(2)] },
       { y: 11000, gates: [div(2), sub(2400), add(1600)] },
     ],
@@ -226,6 +274,17 @@ export const LEVELS = [
       { y: 8900, count: 1700 },
       { y: 10300, count: 2200 },
       { y: 12200, count: 2800 },
+    ],
+    forks: [
+      { y0: 6860, y1: 7420, branches: [
+        { title: 'SAFE', rows: [{ y: 7100, gates: [add(500)] }] },
+        { title: 'GAMBLE', rows: [{ y: 7050, gates: [mul(2)] }], waves: [{ y: 7330, count: 1400 }] },
+      ] },
+      { y0: 8260, y1: 8840, branches: [
+        { title: 'SAFE', rows: [{ y: 8500, gates: [add(700)] }] },
+        { title: 'LANCE', waves: [{ y: 8440, count: 1200, drop: 'lance' }] },
+        { title: 'GAMBLE', rows: [{ y: 8420, gates: [mul(2)] }], waves: [{ y: 8760, count: 1500 }] },
+      ] },
     ],
     jet: { y: 11600, x: -0.82, radius: 0.16, op: mul(2) },
     weapon: { y: 3200, x: -0.78, radius: 0.16, id: 'ball' },

@@ -234,7 +234,7 @@ test('a loadout holds three weapons and switches the one that fires', () => {
   assert.equal(ball.reason, 'swap');
   assert.equal(ball.slot, loadout.equipped, "swapped-in gun is held");
   assert.equal(loadout.slots[ball.slot], 'ball');
-  assert.equal(giveWeapon(loadout, 'spread').reason, 'full');
+  assert.equal(giveWeapon(loadout, 'spread').reason, 'have', 'a duplicate reads HAVE IT even with a full rack');
   assert.equal(giveWeapon(loadout, 'nope').reason, 'full');
   assert.equal(heldWeapon(loadout).id, 'ball');
   const other = ball.slot === 0 ? 1 : 0;
@@ -341,7 +341,7 @@ for (const level of LEVELS) {
     assert.ok(win.count > 0 && win.boss.alive <= 0);
     assert.ok(win.waves.filter((w) => w.mid).every((w) => w.alive <= 0));
     assert.ok(win.loadout.slots.some((id) => id && weaponFamily(id) === BOSS_TYPES[level.boss.type].weak), level.name + ' should carry the boss counter');
-    assert.deepEqual(win.rows.map((r) => r.hit), pw0(level).gates, level.name + ' missed a gate');
+    assert.deepEqual(win.rows.filter((r) => r.fork == null).map((r) => r.hit), pw0(level).gates, level.name + ' missed a gate');
     if (pw0(level).jet) assert.equal(win.jet.taken, true);
     assert.ok(win.stats.tells >= 1, level.name + ' bosses should attack');
     assert.equal(win.stats.landed, 0, 'skilled play dodges everything');
@@ -549,4 +549,131 @@ test('picking up a 4th gun with a full rack swaps it in AND equips it', async ()
   assert.equal(lo.equipped, got.slot, 'swapped gun must be held');
   assert.equal(m.heldWeapon(lo).id, 'ball');
   assert.ok(lo.slots.includes('bolts'), 'the gun you were holding is kept');
+});
+
+// ---------------- Branching paths ----------------
+async function runToY(L, opts) {
+  const m = await import('../src/logic.js');
+  const w = m.createWorld(L);
+  if (opts.noMainCrates) {
+    w.pickups = w.pickups.filter((p) => p.fork != null);
+    for (const wv of w.waves) if (wv.fork == null) wv.drop = null;
+  }
+  if (opts.preset) { w.loadout.slots = ['shot', opts.preset, null]; w.loadout.equipped = 1; w.weapon = m.heldWeapon(w.loadout); }
+  if (opts.count) w.count = opts.count;
+  const plan = { gates: L.proofWin.gates, jet: true, weapon: true, drops: true, dodge: true, smart: true, branches: opts.branches };
+  let lane = 0;
+  while (!w.won && !w.lost && w.frontY < opts.y) {
+    const a = m.autoPilot(w, L, plan, lane);
+    if (a.slot !== w.loadout.equipped) { m.switchWeapon(w.loadout, a.slot); w.weapon = m.heldWeapon(w.loadout); }
+    const d = a.lane - lane; lane += Math.abs(d) <= 0.04 ? d : Math.sign(d) * 0.04;
+    m.stepWorld(w, 1 / 90, lane); lane = w.laneX;
+  }
+  return w;
+}
+
+test('forks: every level has them, level 1 one gentle fork, later levels 2 with real tradeoffs (some 3-way)', async () => {
+  const { branchSummary } = await import('../src/logic.js');
+  assert.equal(LEVELS[0].forks.length, 1);
+  assert.equal(LEVELS[0].forks[0].branches.length, 2);
+  for (const L of LEVELS.slice(1)) assert.ok(L.forks.length >= 2, L.name + ' forks');
+  assert.ok(LEVELS.some((L) => L.forks.some((f) => f.branches.length === 3)), 'some 3-way fork');
+  for (const L of LEVELS) {
+    for (const f of L.forks) {
+      assert.ok(f.y1 > f.y0 + 300);
+      // No full-width content inside a fork.
+      for (const r of L.rows) assert.ok(r.y < f.y0 - 100 || r.y > f.y1 + 40, L.name + ' row ' + r.y + ' inside fork');
+      for (const w of L.waves) assert.ok(w.y < f.y0 || w.y > f.y1, L.name + ' wave ' + w.y + ' inside fork');
+      const sums = f.branches.map(branchSummary);
+      const keys = new Set(sums.map((s) => JSON.stringify([s.adds, s.muls, s.foes, s.guns])));
+      assert.equal(keys.size, sums.length, L.name + ' branches must differ');
+      sums.forEach((s) => assert.ok(s.title));
+    }
+  }
+});
+
+test('fork commit: branch chosen at the split, walls clamp the lane, other branch content vanishes', async () => {
+  const m = await import('../src/logic.js');
+  const L = LEVELS[0];
+  const f0 = L.forks[0];
+  for (const b of [0, 1]) {
+    const w = m.createWorld(L, f0.y0 - 50);
+    for (const x of w.waves) if (x.fork == null) x.alive = 0;
+    w.rows.forEach((r) => { if (r.fork == null) r.triggered = true; });
+    w.jet.resolved = true;
+    const lane = m.branchCenter(2, b);
+    for (let i = 0; i < 30; i++) m.stepWorld(w, 1 / 60, lane);
+    const f = w.forks[0];
+    assert.equal(f.chosen, b);
+    // Try to cross the wall: the logic clamps you inside your branch.
+    m.stepWorld(w, 1 / 60, b === 0 ? 0.9 : -0.9);
+    const [lo, hi] = m.laneBounds(w);
+    assert.ok(w.laneX >= lo && w.laneX <= hi, 'clamped ' + w.laneX);
+    assert.ok(b === 0 ? w.laneX < 0 : w.laneX > 0, 'stayed on own side');
+    for (const r of w.rows) if (r.fork === 0 && r.branch !== b) assert.ok(r.skipped);
+    for (const x of w.waves) if (x.fork === 0 && x.branch !== b) assert.equal(x.alive, 0);
+    // After the rejoin the full lane is open again.
+    while (w.frontY < f0.y1 + 10 && !w.lost) m.stepWorld(w, 1 / 60, lane);
+    assert.deepEqual(m.laneBounds(w), [-0.92, 0.92]);
+  }
+  // Gates inside a branch map to the branch's own width.
+  const row = { gates: [1, 2], span: m.branchSpans(2)[1] };
+  assert.equal(m.rowGateIndex(row, m.gateCenter(row, 0)), 0);
+  assert.equal(m.rowGateIndex(row, m.gateCenter(row, 1)), 1);
+});
+
+test('branches produce clearly different outcomes', async () => {
+  for (const L of LEVELS.slice(0, 3)) {
+    const y = L.forks[L.forks.length - 1].y1 + 50;
+    const counts = [];
+    for (let b = 0; b < L.forks[0].branches.length; b++) {
+      const w = await runToY(L, { branches: L.forks.map(() => b), y });
+      counts.push({ count: Math.round(w.count), slots: w.loadout.slots.join(',') });
+    }
+    const differ = counts[0].count !== counts[1].count || counts[0].slots !== counts[1].slots;
+    assert.ok(differ, L.name + ' branches identical ' + JSON.stringify(counts));
+  }
+});
+
+test('no strictly dominant branch: the right path depends on the gun you hold or crowd size', async () => {
+  // Level 2 fork 1: SPREAD path (counter for the Swarm sergeant) vs TROOPS path.
+  const L2 = LEVELS[1];
+  const after = (b, preset) => runToY(L2, { branches: [b, 0], preset, noMainCrates: true, y: 5400 }).then((w) => w.count);
+  const shotSpread = await after(0, null);
+  const shotTroops = await after(1, null);
+  const heldSpread = await after(0, 'spread');
+  const heldTroops = await after(1, 'spread');
+  assert.ok(shotSpread > shotTroops, `holding Shot, SPREAD path should win the sergeant fight (${shotSpread} vs ${shotTroops})`);
+  assert.ok(heldTroops > heldSpread, `already holding Spread, TROOPS should be better (${heldTroops} vs ${heldSpread})`);
+  // Level 2 fork 2: SAFE +60 vs RISKY x2 behind a wave: depends on crowd size.
+  const m = await import('../src/logic.js');
+  const fork = (count, b) => {
+    const w = m.createWorld(L2, L2.forks[1].y0 - 60);
+    for (const x of w.waves) if (x.fork !== 1) x.alive = 0;
+    w.rows.forEach((r) => { if (r.fork !== 1) r.triggered = true; });
+    w.jet.resolved = true; w.cannon = 0; w.count = count;
+    w.pickups = [];
+    const lane = m.branchCenter(2, b);
+    while (w.frontY < L2.forks[1].y1 + 300 && !w.lost) m.stepWorld(w, 1 / 60, lane);
+    return w.lost ? 0 : w.count;
+  };
+  assert.ok(fork(80, 0) > fork(80, 1), 'small crowd: SAFE is better');
+  assert.ok(fork(600, 1) > fork(600, 0), 'big crowd: RISKY x2 is better');
+});
+
+test('casual players pick a branch from the sign and still win levels 1-2 on any branch; level 3 safe-ish branch most seeds', async () => {
+  const { casualPlay } = await import('../src/logic.js');
+  for (const [li, need] of [[0, 28], [1, 27]]) {
+    for (const branch of [0, 1, 'auto']) {
+      let wins = 0;
+      for (let s = 1; s <= 30; s++) if (casualPlay(LEVELS[li], s, { branch }).won) wins++;
+      assert.ok(wins >= need, `L${li + 1} branch ${branch}: ${wins}/30`);
+    }
+  }
+  let w3 = 0;
+  for (let s = 1; s <= 30; s++) if (casualPlay(LEVELS[2], s, { branch: 'safe' }).won) w3++;
+  assert.ok(w3 >= 20, 'L3 safe branch casual ' + w3 + '/30');
+  // The casual mouse really commits to the branch it wanted.
+  const r = casualPlay(LEVELS[0], 3, { branch: 1 });
+  assert.equal(r.forks[0].chosen, 1);
 });

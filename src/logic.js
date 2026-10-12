@@ -62,6 +62,100 @@ export function laneCenter(index, gateCount) {
   return -1 + (i + 0.5) * (2 / n);
 }
 
+/* ---------------- Branching paths ----------------
+ * A fork splits the lane into 2-3 side-by-side branches between y0 and y1,
+ * separated by walls. You commit to the branch you are in when the crowd front
+ * reaches y0 and cannot cross until y1. Branch content (gates, waves, crates)
+ * only exists for the branch you took. Scene and tests share all of this.
+ */
+export const FORK_WALL = 0.07; // half-width of a dividing wall, in lane units
+
+export function branchSpans(n) {
+  const k = Math.max(1, n | 0);
+  const spans = [];
+  for (let i = 0; i < k; i++) {
+    const a = -1 + i * (2 / k);
+    const b = a + 2 / k;
+    spans.push([i > 0 ? a + FORK_WALL : a, i < k - 1 ? b - FORK_WALL : b]);
+  }
+  return spans;
+}
+
+export function branchCenter(n, i) {
+  const s = branchSpans(n)[i];
+  const a = Math.max(-LANE_CLAMP, s[0]);
+  const b = Math.min(LANE_CLAMP, s[1]);
+  return (a + b) / 2;
+}
+
+/** Which branch a lane position falls in (nearest when on a wall). */
+export function branchAt(n, laneX) {
+  const spans = branchSpans(n);
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < spans.length; i++) {
+    const [a, b] = spans[i];
+    const d = laneX < a ? a - laneX : laneX > b ? laneX - b : 0;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+/** Lane limits right now: the chosen branch while inside a fork, else the full lane. */
+export function laneBounds(world) {
+  for (const f of world.forks || []) {
+    if (f.chosen >= 0 && world.frontY >= f.y0 && world.frontY < f.y1) {
+      const s = f.spans[f.chosen];
+      return [Math.max(-LANE_CLAMP, s[0] + 0.02), Math.min(LANE_CLAMP, s[1] - 0.02)];
+    }
+  }
+  return [-LANE_CLAMP, LANE_CLAMP];
+}
+
+export function clampLane(world, laneX) {
+  const [a, b] = laneBounds(world);
+  return Math.max(a, Math.min(b, laneX));
+}
+
+/** Gate geometry inside a row's span (full lane for normal rows). */
+export function gateCenter(row, i) {
+  const span = row.span || [-1, 1];
+  return span[0] + ((laneCenter(i, row.gates.length) + 1) / 2) * (span[1] - span[0]);
+}
+
+export function gateEdges(row, i) {
+  const span = row.span || [-1, 1];
+  const n = row.gates.length;
+  const w = (span[1] - span[0]) / n;
+  return [span[0] + i * w, span[0] + (i + 1) * w];
+}
+
+export function rowGateIndex(row, laneX) {
+  const span = row.span || [-1, 1];
+  const u = ((laneX - span[0]) / (span[1] - span[0])) * 2 - 1;
+  return pickGateIndex(u, row.gates.length);
+}
+
+/** Is this piece of content live for the branch the player is on (or before choosing)? */
+export function branchLive(world, item) {
+  if (item.fork == null) return true;
+  const f = world.forks[item.fork];
+  return f.chosen < 0 || f.chosen === item.branch;
+}
+
+/** What a branch offers, for signs and for players deciding. */
+export function branchSummary(branch) {
+  const gates = [];
+  for (const r of branch.rows || []) for (const g of r.gates) gates.push(g);
+  const muls = gates.filter((g) => g.kind === 'mul');
+  const adds = gates.filter((g) => g.kind === 'add').reduce((s, g) => s + g.value, 0);
+  const bad = gates.filter((g) => !g.good);
+  const foes = (branch.waves || []).reduce((s, w) => s + w.count, 0);
+  const guns = (branch.waves || []).filter((w) => w.drop).map((w) => w.drop).concat((branch.pads || []).map((p) => p.id));
+  const mids = (branch.waves || []).filter((w) => w.mid).map((w) => w.type);
+  return { muls: muls.map((g) => g.value), adds, bad: bad.length, foes, guns, mids, title: branch.title || '' };
+}
+
 export function justCrossed(prevY, nextY, lineY) {
   return prevY < lineY && nextY >= lineY;
 }
@@ -116,7 +210,7 @@ export function giveWeapon(loadout, id, equipNew = true) {
   const have = slots.indexOf(w.id);
   if (have >= 0) {
     const full = slots.every((s) => !!s);
-    return { ok: false, reason: full ? 'full' : 'have', id: w.id, name: w.name, slot: have };
+    return { ok: false, reason: 'have', id: w.id, name: w.name, slot: have, full };
   }
   let empty = -1;
   for (let i = 0; i < SLOT_CAP; i++) {
@@ -332,6 +426,9 @@ function makeWave(w, i) {
     final: false,
     name: w.name || '',
     drop: w.drop || null,
+    x: w.x || 0,
+    fork: w.fork != null ? w.fork : null,
+    branch: w.branch != null ? w.branch : null,
     dropX: w.dropX != null ? w.dropX : (w.mid ? -0.72 : 0.82),
     dropR: w.dropR || 0.16,
     dropped: false,
@@ -347,7 +444,28 @@ function makeWave(w, i) {
   };
 }
 
+function expandForks(level) {
+  const rows = [];
+  const waves = [];
+  const pads = [];
+  const forks = (level.forks || []).map((f, fi) => {
+    const n = f.branches.length;
+    const spans = branchSpans(n);
+    f.branches.forEach((br, bi) => {
+      const cx = branchCenter(n, bi);
+      for (const r of br.rows || []) rows.push({ y: r.y, gates: r.gates, span: spans[bi], fork: fi, branch: bi });
+      for (const w of br.waves || []) {
+        waves.push(Object.assign({}, w, { x: cx, fork: fi, branch: bi, dropX: w.dropX != null ? w.dropX : cx, dropR: w.dropR || 0.22 }));
+      }
+      for (const pd of br.pads || []) pads.push({ y: pd.y, x: pd.x != null ? pd.x : cx, radius: pd.radius || 0.2, id: pd.id, resolved: false, taken: false, source: 'pad', fork: fi, branch: bi });
+    });
+    return { index: fi, y0: f.y0, y1: f.y1, n, spans, chosen: -1, branches: f.branches, summary: f.branches.map(branchSummary) };
+  });
+  return { rows, waves, pads, forks };
+}
+
 export function createWorld(level, frontY = START_FRONT) {
+  const fx = expandForks(level);
   const padSrc = level.weapon || null;
   const pad = padSrc ? {
     y: padSrc.y,
@@ -373,13 +491,10 @@ export function createWorld(level, frontY = START_FRONT) {
     loadout,
     weapon: heldWeapon(loadout),
     blueAcc: 0,
-    rows: level.rows.map((row, index) => ({
-      y: row.y,
-      gates: row.gates,
-      index,
-      triggered: false,
-      hit: -1,
-    })),
+    rows: level.rows.map((row) => ({ y: row.y, gates: row.gates, span: [-1, 1], fork: null, branch: null }))
+      .concat(fx.rows)
+      .map((row, index) => Object.assign(row, { index, triggered: false, hit: -1 })),
+    forks: fx.forks,
     jet: {
       y: level.jet.y,
       x: level.jet.x,
@@ -389,8 +504,8 @@ export function createWorld(level, frontY = START_FRONT) {
       taken: false,
     },
     pad,
-    pickups: padSrc ? [pad] : [],
-    waves: (level.waves || []).map(makeWave),
+    pickups: (padSrc ? [pad] : []).concat(fx.pads),
+    waves: (level.waves || []).concat(fx.waves).map(makeWave),
     boss: {
       id: 'boss',
       y0: level.boss.y,
@@ -435,6 +550,18 @@ function marchUnit(unit, world, step) {
   else unit.front -= march * step;
 }
 
+function updateForks(world, events) {
+  for (const f of world.forks) {
+    if (f.chosen >= 0 || world.frontY < f.y0) continue;
+    f.chosen = branchAt(f.n, world.laneX);
+    events.fork = { index: f.index, branch: f.chosen, title: f.branches[f.chosen].title || '' };
+    // The road not taken disappears.
+    for (const r of world.rows) if (r.fork === f.index && r.branch !== f.chosen) { r.triggered = true; r.skipped = true; }
+    for (const w of world.waves) if (w.fork === f.index && w.branch !== f.chosen) { w.alive = 0; w.skipped = true; w.dropped = true; }
+    for (const pk of world.pickups) if (pk.fork === f.index && pk.branch !== f.chosen) { pk.resolved = true; pk.skipped = true; }
+  }
+}
+
 function spawnDrop(world, unit) {
   if (world.noDrops) return null;
   if (!unit.drop || unit.dropped || !WEAPONS[unit.drop]) return null;
@@ -447,6 +574,8 @@ function spawnDrop(world, unit) {
     resolved: false,
     taken: false,
     source: unit.mid ? 'mid' : 'wave',
+    fork: unit.fork,
+    branch: unit.branch,
   };
   world.pickups.push(drop);
   return { id: drop.id, name: weaponById(drop.id).name, x: drop.x, y: drop.y, source: drop.source };
@@ -583,6 +712,8 @@ export function stepWorld(world, dt, laneX) {
   if (step === 0) return events;
   world.time += step;
   world.laneX = Math.max(-1, Math.min(1, Number(laneX) || 0));
+  updateForks(world, events);
+  world.laneX = clampLane(world, world.laneX);
 
   const units = world.waves.concat([world.boss]);
   const touching = units.some((u) => u.alive > 0 && yTouch(world.frontY, u.front, u.depth));
@@ -625,7 +756,7 @@ export function stepWorld(world, dt, laneX) {
     if (!(prev < e.y && world.frontY >= e.y)) continue;
     if (e.type === 'row') {
       e.row.triggered = true;
-      const idx = pickGateIndex(world.laneX, e.row.gates.length);
+      const idx = rowGateIndex(e.row, world.laneX);
       e.row.hit = idx;
       const op = e.row.gates[idx];
       world.count = applyOp(world.count, op);
@@ -767,16 +898,46 @@ export function safeLane(world, lane) {
  * dodge telegraphs; switch to the best weapon for the next foe.
  * Returns { lane, slot } targets. Shared by tests and the smoke driver.
  */
+function planBranch(plan, fork) {
+  const b = plan.branches;
+  if (Array.isArray(b) && b[fork.index] != null) return Math.min(fork.n - 1, b[fork.index]);
+  if (typeof b === 'number') return Math.min(fork.n - 1, b);
+  return 0;
+}
+
+function bestGateIn(row, count) {
+  let best = 0;
+  let bv = -Infinity;
+  row.gates.forEach((g, i) => { const v = applyOp(count, g); if (v > bv) { bv = v; best = i; } });
+  return best;
+}
+
 export function autoPilot(world, level, plan, lane) {
   const options = [];
   for (const row of world.rows) {
     if (!row.triggered) {
-      options.push({ y: row.y, lane: laneCenter(plan.gates[row.index], row.gates.length) });
+      if (row.fork != null) {
+        const f = world.forks[row.fork];
+        const want = f.chosen >= 0 ? f.chosen : planBranch(plan, f);
+        if (row.branch !== want) continue;
+        options.push({ y: row.y, lane: gateCenter(row, bestGateIn(row, world.count)) });
+      } else {
+        options.push({ y: row.y, lane: laneCenter(plan.gates[row.index], row.gates.length) });
+      }
     }
+  }
+  for (const f of world.forks) {
+    if (f.chosen < 0) options.push({ y: f.y0 - 1, lane: branchCenter(f.n, planBranch(plan, f)) });
   }
   if (!world.jet.resolved && plan.jet) options.push({ y: world.jet.y, lane: level.jet.x });
   for (const pk of world.pickups) {
     if (pk.resolved) continue;
+    if (pk.fork != null) {
+      const f = world.forks[pk.fork];
+      if (pk.branch !== (f.chosen >= 0 ? f.chosen : planBranch(plan, f))) continue;
+      if (plan.drops || plan.weapon) options.push({ y: pk.y, lane: pk.x });
+      continue;
+    }
     if (pk.source === 'pad' ? plan.weapon : plan.drops) options.push({ y: pk.y, lane: pk.x });
   }
   options.sort((a, b) => a.y - b.y);
@@ -809,6 +970,7 @@ export function playThrough(level, indices, wantJet, wantWeapon = false, opts = 
     drops: o.drops != null ? !!o.drops : !!wantWeapon,
     dodge: !!o.dodge,
     smart: !!o.smart,
+    branches: o.branches != null ? o.branches : null,
   };
   const world = createWorld(level, START_FRONT);
   if (o.arm) {
@@ -838,6 +1000,7 @@ export function playThrough(level, indices, wantJet, wantWeapon = false, opts = 
     if (Math.abs(d) <= maxStep) lane = aim.lane;
     else lane += Math.sign(d) * maxStep;
     stepWorld(world, dt, lane);
+    lane = world.laneX;
     if (world.frontY > level.boss.y + 2500) break;
   }
   world.finalLane = lane;
@@ -901,6 +1064,38 @@ function gauss(rnd) {
  * Returns a stateful function (world, level, dt) => pointer target lane.
  * The Phaser scene uses this exact function for ?casual=SEED runs.
  */
+/**
+ * How a player reading the fork sign chooses: a fixed index, 'safe' (fewest foes,
+ * no traps), 'loot' (guns / multipliers), or 'auto': take a branch that hands you
+ * the counter for the next boss if you do not hold one, otherwise the safer one.
+ */
+export function pickBranch(world, fork, pref = 'auto', rnd = Math.random) {
+  if (typeof pref === 'number') return Math.max(0, Math.min(fork.n - 1, pref));
+  const sums = fork.summary;
+  const safety = (s) => -s.foes - s.bad * 40 + s.adds;
+  const loot = (s) => s.guns.length * 100 + s.muls.reduce((a, v) => a + (v - 1) * world.count, 0) + s.adds - s.foes;
+  let score;
+  if (pref === 'safe') score = safety;
+  else if (pref === 'loot') score = loot;
+  else {
+    const foe = nextBossAfter(world, fork.y1);
+    const held = world.loadout.slots.filter(Boolean);
+    const haveCounter = foe && held.some((id) => typeMult(weaponById(id), foe.type) > 1);
+    score = (s) => {
+      const counter = foe && s.guns.some((id) => typeMult(weaponById(id), foe.type) > 1);
+      return (counter && !haveCounter ? 400 : 0) + safety(s) + s.muls.reduce((a, v) => a + (v - 1) * world.count * 0.6, 0) + rnd() * 10;
+    };
+  }
+  let best = 0;
+  for (let i = 1; i < sums.length; i++) if (score(sums[i]) > score(sums[best])) best = i;
+  return best;
+}
+
+function nextBossAfter(world, y) {
+  const mids = world.waves.filter((w) => w.mid && w.fork == null && w.y0 > y && w.alive > 0).sort((a, b) => a.y0 - b.y0);
+  return mids[0] || world.boss;
+}
+
 export function createCasualMouse(seed = 1, opts = {}) {
   const rnd = seededRandom(seed);
   const delay = opts.delay != null ? opts.delay : 0.35;
@@ -915,13 +1110,28 @@ export function createCasualMouse(seed = 1, opts = {}) {
   const queue = [];
   let held = (rnd() * 2 - 1) * 0.15;
   let clock = 0;
+  const forkPlan = new Map();
+  const wantBranch = (world, f) => {
+    if (f.chosen >= 0) return f.chosen;
+    if (!forkPlan.has(f.index)) forkPlan.set(f.index, pickBranch(world, f, opts.branch, rnd));
+    return forkPlan.get(f.index);
+  };
+  const liveFor = (world, item) => item.fork == null || item.branch === wantBranch(world, world.forks[item.fork]);
   return function casualMouse(world, level, dt) {
     clock += dt;
     const lane = world.laneX;
     let intent = null;
     let nearest = Infinity;
+    for (const f of world.forks) {
+      if (f.chosen >= 0) continue;
+      const ahead = f.y0 - world.frontY;
+      if (ahead < 0 || ahead > look * 1.3) continue;
+      // Heading for the fork: steer into the branch picked from its sign.
+      intent = branchCenter(f.n, wantBranch(world, f)) + gauss(rnd) * sd * 0.3;
+      nearest = ahead;
+    }
     for (const row of world.rows) {
-      if (row.triggered) continue;
+      if (row.triggered || !liveFor(world, row)) continue;
       const ahead = row.y - world.frontY;
       if (ahead < 0 || ahead > look || ahead >= nearest) continue;
       nearest = ahead;
@@ -929,7 +1139,7 @@ export function createCasualMouse(seed = 1, opts = {}) {
         const n = row.gates.length;
         let best = null;
         for (let i = 0; i < n; i++) {
-          const cx = laneCenter(i, n);
+          const cx = gateCenter(row, i);
           const dist = Math.abs(cx - lane);
           if (dist > reach) continue;
           const v = gateAppeal(row.gates[i], world.count) - dist * 12 + gauss(rnd) * 6;
@@ -949,7 +1159,7 @@ export function createCasualMouse(seed = 1, opts = {}) {
       }
     }
     for (const pk of world.pickups) {
-      if (pk.resolved) continue;
+      if (pk.resolved || !liveFor(world, pk)) continue;
       const ahead = pk.y - world.frontY;
       if (ahead < 0 || ahead > look * 0.7 || ahead > nearest) continue;
       const key = pk.source + ':' + pk.y + ':' + pk.x;
@@ -979,6 +1189,7 @@ export function casualPlay(level, seed = 1, opts = {}) {
     lane = followLane(lane, target, dt);
     if (wait > 0) { wait -= dt; continue; }
     stepWorld(world, dt, lane);
+    lane = world.laneX;
     if (world.frontY > level.boss.y + 2500) break;
   }
   world.finalLane = lane;

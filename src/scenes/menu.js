@@ -1,3 +1,4 @@
+import { bindButtons } from '../buttons.js';
 import Phaser from 'phaser';
 import { FONT, fitCamera } from '../view.js';
 import { ensureArt, paintBanner, paintCannon, preloadArt, hasAtlas, ensureAnims, ATLAS } from '../art.js';
@@ -106,8 +107,8 @@ export class MenuScene extends Phaser.Scene {
     }).setOrigin(0.5);
     btn.on('pointerover', () => btn.setFillStyle(0x8452f2));
     btn.on('pointerout', () => btn.setFillStyle(0x6c35de));
-    btn.on('pointerdown', () => this.begin());
-    playLabel.setInteractive({ useHandCursor: true }).on('pointerdown', () => this.begin());
+    playLabel.setInteractive({ useHandCursor: true });
+    this.playBtn = btn;
 
     this.add.text(270, 708, 'Mouse, drag, or A / D    ·    cannon fires itself', {
       fontFamily: FONT,
@@ -129,11 +130,11 @@ export class MenuScene extends Phaser.Scene {
       stroke: '#3a261c',
       strokeThickness: 4,
     }).setOrigin(1, 0).setInteractive({ useHandCursor: true });
-    this.muteText.on('pointerdown', (pointer, lx, ly, event) => {
-      if (event && event.stopPropagation) event.stopPropagation();
-      this.swallow = true;
-      this.doMute();
-    });
+    // DOM-mapped hit test (works after any resize); mute first, then PLAY.
+    bindButtons(this, () => [
+      { obj: this.muteText, fn: () => { this.swallow = true; this.doMute(); }, pad: 10 },
+      { obj: this.playBtn, fn: () => { this.swallow = true; this.begin(); }, pad: 6 },
+    ]);
 
     this.input.on('pointerdown', (p) => {
       if (this.swallow) {

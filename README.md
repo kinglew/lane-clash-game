@@ -76,6 +76,33 @@ The cannon still fires new soldiers on its own and the lane never pauses. Beatin
 
 On-screen soldiers are capped around 100 sprites, and shots, sparks, shockwaves, and boss rocks come from fixed pools, so big numbers stay fast. The number itself is the real count.
 
+## Branching paths
+
+At each fork the lane splits into 2 (sometimes 3) side-by-side paths separated by
+walls, then rejoins. A sign before the split previews each path: its name, the
+troop gates (+N, ×N), any gun crate (with the icon of the boss type it beats) and
+the foes waiting (FOES N). You commit to the branch you are in when the crowd
+reaches the split; walls clamp you until the rejoin, and the other branch's gates,
+waves and crates vanish. Fork logic (`branchSpans`, `laneBounds`, `rowGateIndex`,
+`pickBranch`) lives in `src/logic.js`, so the scene and the tests run the same code.
+
+| Level | Fork | Branches and tradeoff |
+|---|---|---|
+| 1 | 1 | TROOPS +24 vs ARMORY (14 foes, Cannonball crate, +8). Gentle: Cannonball counters the Armored boss. |
+| 2 | 1 | SPREAD (14 foes, Spread crate: counter for the Swarm sergeant) vs TROOPS +36. Best path depends on whether you already hold Spread. |
+| 2 | 2 | SAFE +60 vs RISKY ×2 then 90 foes. Small crowds go SAFE, big crowds go RISKY. |
+| 3 | 1 | CANNON (30 foes, Cannonball: counter for the Armored banner) vs TROOPS +80. |
+| 3 | 2 | SAFE +100 vs RISKY (180 foes, Needle crate: counter for the Swift boss, then ×2). |
+| 4 | 2 | TROOPS +80 / 90 foes vs LANCE (150 foes, Lance for the Bulky marshal); SAFE +150 / 200 foes vs SPREAD (Swarm boss counter) vs GAMBLE ×2 then 650 foes. |
+| 5 | 2 | SAFE +300 vs GAMBLE ×2 / 900 foes; SAFE +500 vs CANNON (Armored boss counter) vs GAMBLE ×2 / 1300 foes. |
+| 6 | 2 | SAFE +500 vs GAMBLE ×2 / 1400 foes; SAFE +700 vs LANCE (Bulky boss counter) vs GAMBLE ×2 / 1500 foes. |
+
+Tests check that a fork commits the branch you are in, walls clamp steering,
+branches give different outcomes, no path strictly dominates (level 2: Spread vs
+Troops flips with the gun you hold; Safe vs Risky flips with crowd size), and the
+casual mouse (which reads the signs: takes a counter gun it lacks, otherwise the
+safer path) still wins levels 1-2 on any branch.
+
 ## Levels
 
 | Lane | Mid-boss | Final boss |

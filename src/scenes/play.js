@@ -1,3 +1,4 @@
+import { bindButtons, screenRect } from '../buttons.js';
 import Phaser from 'phaser';
 import { LEVELS } from '../levels.js';
 import {
@@ -15,6 +16,12 @@ import {
   BOSS_TYPES,
   strongAgainst,
   followLane,
+  gateCenter,
+  gateEdges,
+  rowGateIndex,
+  laneBounds,
+  branchCenter,
+  weaponById as weaponInfo,
   createCasualMouse,
 } from '../logic.js';
 import {
@@ -92,7 +99,7 @@ export class PlayScene extends Phaser.Scene {
     this.count = this.world.count;
     this.frontY = this.world.frontY;
     const cs = this.registry.get('casualSeed');
-    this.casualMouse = this.levelIndex === 0 && cs != null && this.smoke ? createCasualMouse(cs, new URLSearchParams(window.location.search).get('grab') === '1' ? { greed: 1, reach: 0.9 } : {}) : null;
+    this.casualMouse = this.levelIndex === 0 && cs != null && this.smoke ? createCasualMouse(cs, casualOpts()) : null;
     if (this.casualMouse) this.smoke = false;
     this.casualRun = !!this.casualMouse;
     this.goTimer = this.casualMouse ? GO_DELAY : (this.smoke ? 0 : GO_DELAY);
@@ -175,7 +182,7 @@ export class PlayScene extends Phaser.Scene {
     }
     this.boomCursor = 0;
 
-    this.rows = this.level.rows.map((row, index) => {
+    this.rows = this.world.rows.map((row, index) => {
       const labels = row.gates.map(() => this.add.text(0, 0, '', {
         fontFamily: FONT,
         fontSize: '32px',
@@ -187,6 +194,7 @@ export class PlayScene extends Phaser.Scene {
       return {
         y: row.y,
         gates: row.gates,
+        span: row.span,
         index,
         triggered: false,
         gfx: this.add.graphics(),
@@ -208,6 +216,8 @@ export class PlayScene extends Phaser.Scene {
     const arm = (this.level.weapon && this.level.weapon.id) || 'shot';
     const armName = arm === 'bolts' ? 'RAPID BOLTS' : arm === 'spread' ? 'SPREAD SHOT' : arm === 'ball' ? 'CANNONBALL' : 'SHOT';
     this.weaponGfx = this.add.graphics();
+    this.forkGfx = this.add.graphics();
+    this.buildForkSigns();
     this.weaponLabel = this.add.text(0, 0, armName, {
       fontFamily: FONT,
       fontSize: '15px',
@@ -229,7 +239,6 @@ export class PlayScene extends Phaser.Scene {
     for (let i = 0; i < 3; i++) {
       const x = 270 + (i - 1) * 156;
       const zone = this.add.zone(x, 918, 146, 52).setInteractive({ useHandCursor: true }).setDepth(4600);
-      zone.on('pointerdown', () => this.trySwitch(i));
       this.slotZones.push(zone);
       this.slotTexts.push(this.add.text(x, 918, (i + 1) + ' —', {
         fontFamily: FONT, fontSize: '13px', fontStyle: 'bold', color: '#d6ecff',
@@ -316,10 +325,20 @@ export class PlayScene extends Phaser.Scene {
     }).setOrigin(1, 0).setDepth(4300);
     this.muteZone = this.add.zone(VIEW.width - 52, 28, 100, 44).setOrigin(0.5).setDepth(4301)
       .setInteractive({ useHandCursor: true });
-    this.muteZone.on('pointerdown', () => this.toggleMute());
     this.fsText = this.add.text(0, 0, '[ ]', { ...hudStyle, fontSize: '18px' }).setOrigin(1, 0).setDepth(4300);
     this.fsZone = this.add.zone(0, 0, 56, 44).setOrigin(0.5).setDepth(4301).setInteractive({ useHandCursor: true });
-    this.fsZone.on('pointerdown', () => this.toggleFullscreen());
+    bindButtons(this, () => {
+      const list = [];
+      if (this.mode === 'overlay' && this.overlayButtons) {
+        list.push({ obj: this.overlayButtons.primary, fn: () => this.confirm(), pad: 10 });
+        list.push({ obj: this.overlayButtons.menu, fn: () => this.toMenu(), pad: 14 });
+        return list;
+      }
+      list.push({ obj: this.muteZone, fn: () => this.toggleMute() });
+      list.push({ obj: this.fsZone, fn: () => this.toggleFullscreen() });
+      this.slotZones.forEach((z, i) => list.push({ obj: z, fn: () => this.trySwitch(i) }));
+      return list;
+    });
 
     // Type icons under each weapon slot (types that gun beats, best first).
     this.slotIcons = [];
@@ -336,7 +355,13 @@ export class PlayScene extends Phaser.Scene {
 
     this.slotY = 918;
     this.layoutHud();
-    const onResize = () => this.layoutHud();
+    const onResize = () => {
+      // Phaser resizes the camera after scene listeners run; re-fit now and again
+      // next frame so the camera (and so every hit area) is centred on the new size.
+      this.layoutHud();
+      this.publishButtons();
+      this.time.delayedCall(0, () => { if (this.scene.isActive()) { this.layoutHud(); this.publishButtons(); } });
+    };
     this.scale.on('resize', onResize);
     this.events.once('shutdown', () => this.scale.off('resize', onResize));
 
@@ -370,6 +395,7 @@ export class PlayScene extends Phaser.Scene {
 
   aimFromPointer(p) {
     if (this.mode === 'overlay') return;
+    if (this.uiHitAt && this.time.now - this.uiHitAt < 50) return; // press was a button
     const ui = this.ui;
     if (p.worldY < ui.top + 70 && p.worldX > ui.right - 170) return;
     if (p.worldY > this.slotY - 30) return;
@@ -493,6 +519,7 @@ export class PlayScene extends Phaser.Scene {
 
     this.steer(dt);
     if (this.mode === 'run') this.updateRun(dt);
+    else if (this.mode === 'overlay') this.publishButtons();
 
     touchLane({
       level: this.level.id,
@@ -500,6 +527,8 @@ export class PlayScene extends Phaser.Scene {
       mode: this.mode,
       log: this.log,
       slots: this.world.loadout.slots.slice(),
+      front: Math.round(this.frontY),
+      forks: this.world.forks.map((f) => f.chosen),
       equipped: this.world.loadout.equipped,
     });
     this.draw();
@@ -519,6 +548,12 @@ export class PlayScene extends Phaser.Scene {
     const ev = stepWorld(this.world, dt, this.laneX);
     this.syncWorld();
     for (const g of ev.gates) this.juiceGate(g);
+    if (ev.fork) {
+      const f = this.world.forks[ev.fork.index];
+      this.sfx.gate(true);
+      this.spawnFloater(270, Math.max(220, this.frontScreenY() - 160), (ev.fork.title || 'PATH') + ' PATH', '#fff6cf', 1300, 34);
+      this.log.push({ type: 'fork', index: ev.fork.index, branch: ev.fork.branch, title: ev.fork.title, n: f.n });
+    }
     if (ev.jet) this.juiceJet(ev.jet);
     for (let i = 0; i < ev.weapons.length; i++) this.juiceWeapon(ev.weapons[i]);
     this.juiceAttacks(ev.attacks);
@@ -547,6 +582,7 @@ export class PlayScene extends Phaser.Scene {
   }
 
   syncWorld() {
+    this.laneX = this.world.laneX; // walls: the logic clamps you into your branch
     this.count = this.world.count;
     this.frontY = this.world.frontY;
     this.jetTaken = this.world.jet.taken;
@@ -569,7 +605,7 @@ export class PlayScene extends Phaser.Scene {
     } else {
       this.cameras.main.shake(90, 0.0035);
     }
-    const p = project(row.y, laneCenter(g.gate, row.gates.length), this.camY());
+    const p = project(row.y, gateCenter(row, g.gate), this.camY());
     this.spawnFloater(p.x, p.y, opLabel(op), op.good ? '#fff6cf' : '#ffd4dc');
     this.log.push({ type: 'gate', index: g.index, gate: g.gate, count: shown(g.count) });
   }
@@ -918,13 +954,24 @@ export class PlayScene extends Phaser.Scene {
     }).setOrigin(0.5), 5003);
     btn.on('pointerover', () => btn.setFillStyle(0x8452f2));
     btn.on('pointerout', () => btn.setFillStyle(0x6c35de));
-    btn.on('pointerdown', () => this.confirm());
 
     const menu = add(this.add.text(270, 610, 'MENU', {
       fontFamily: FONT, fontSize: '18px', fontStyle: 'bold', color: '#6a4a32',
     }).setOrigin(0.5).setInteractive({ useHandCursor: true }), 5003);
-    menu.on('pointerdown', () => this.toMenu());
     this.overlayObjs = objs;
+    this.overlayButtons = { primary: btn, menu };
+    this.publishButtons();
+  }
+
+  /** Debug hook: screen-space rects of clickable buttons (for headless click checks). */
+  publishButtons() {
+    const rect = (o) => screenRect(this, o);
+    const out = {};
+    if (this.overlayButtons) for (const k of Object.keys(this.overlayButtons)) out[k] = rect(this.overlayButtons[k]);
+    if (this.slotZones) this.slotZones.forEach((z, i) => { out['slot' + (i + 1)] = rect(z); });
+    if (this.muteZone) out.sfx = rect(this.muteZone);
+    if (this.fsZone) out.fullscreen = rect(this.fsZone);
+    touchLane({ buttons: out, canvas: { w: this.scale.width, h: this.scale.height } });
   }
 
   confirm() {
@@ -981,7 +1028,9 @@ export class PlayScene extends Phaser.Scene {
 
   draw() {
     const cam = this.camY();
+    this.crowdBounds = laneBounds(this.world);
     this.drawGround(cam);
+    this.drawForks(cam);
     this.drawGates(cam);
     this.drawJet(cam);
     this.drawWeapon(cam);
@@ -989,6 +1038,82 @@ export class PlayScene extends Phaser.Scene {
     this.drawCannon(cam);
     this.drawFx(cam);
     this.drawHud(cam);
+  }
+
+  buildForkSigns() {
+    this.forkSigns = [];
+    const style = { fontFamily: FONT, fontSize: '30px', fontStyle: 'bold', color: '#fff8e8', stroke: '#1a120c', strokeThickness: 5, align: 'center' };
+    for (const f of this.world.forks) {
+      for (let b = 0; b < f.n; b++) {
+        const s = f.summary[b];
+        const bits = [];
+        if (s.adds) bits.push('+' + s.adds);
+        for (const v of s.muls) bits.push('\u00d7' + v);
+        for (const id of s.guns) bits.push(weaponInfo(id).name.toUpperCase());
+        if (s.foes) bits.push('FOES ' + s.foes);
+        const text = this.add.text(0, 0, s.title + '\n' + bits.join('\n'), style).setOrigin(0.5, 1).setVisible(false);
+        const gun = s.guns[0];
+        const types = gun ? strongAgainst(gun) : [];
+        const icon = this.add.image(0, 0, TYPE_ICON[types[0]] || TYPE_ICON.neutral).setVisible(false);
+        this.forkSigns.push({ fork: f, branch: b, text, icon, hasIcon: !!gun });
+      }
+    }
+  }
+
+  drawForks(cam) {
+    const g = this.forkGfx;
+    g.clear();
+    for (const f of this.world.forks) {
+      const y0 = f.y0 - 40;
+      const y1 = f.y1;
+      if (y1 < cam - 50 || y0 > cam + 1600) continue;
+      // Dividing walls between branches, drawn in perspective in short slices.
+      for (let k = 0; k < f.n - 1; k++) {
+        const xL = f.spans[k][1];
+        const xR = f.spans[k + 1][0];
+        const steps = 10;
+        for (let s = 0; s < steps; s++) {
+          const ya = y0 + ((y1 - y0) * s) / steps;
+          const yb = y0 + ((y1 - y0) * (s + 1)) / steps;
+          const a1 = project(ya, xL, cam); const a2 = project(ya, xR, cam);
+          const b1 = project(yb, xL, cam); const b2 = project(yb, xR, cam);
+          if (!a1.vis && !b1.vis) continue;
+          const h = 46 * a1.scale;
+          g.fillStyle(0x6b4a2e, 1);
+          g.fillPoints([{ x: a1.x, y: a1.y }, { x: a2.x, y: a2.y }, { x: b2.x, y: b2.y }, { x: b1.x, y: b1.y }], true);
+          g.fillStyle(0xb98a55, 1);
+          g.fillPoints([{ x: a1.x, y: a1.y - h }, { x: a2.x, y: a2.y - h }, { x: b2.x, y: b2.y - h * 0.95 }, { x: b1.x, y: b1.y - h * 0.95 }], true);
+          g.fillStyle(0x8a6238, 1);
+          g.fillRect(Math.min(a1.x, a2.x), a1.y - h, Math.abs(a2.x - a1.x), h);
+        }
+      }
+      g.setDepth(119 + project(y0, 0, cam).y);
+    }
+    for (const sign of this.forkSigns) {
+      const f = sign.fork;
+      const sy = f.y0 - 30;
+      const p = project(sy, branchCenter(f.n, sign.branch), cam);
+      const show = p.vis && p.t > 0 && this.frontY < f.y0 && f.chosen < 0;
+      sign.text.setVisible(show);
+      sign.icon.setVisible(show && sign.hasIcon);
+      if (!show) continue;
+      const s = Math.max(0.75, p.scale * 1.6);
+      const maxW = (p.half * 2 / f.n) * 0.9;
+      const ts = Math.min(s * 0.7, maxW / Math.max(1, sign.text.width + 16));
+      sign.text.setScale(ts);
+      const w = sign.text.displayWidth + 16 * ts;
+      const hgt = sign.text.displayHeight + 10 * ts;
+      const post = 40 * s;
+      g.fillStyle(0x3a2616, 0.95);
+      g.fillRect(p.x - 3 * s, p.y - post, 6 * s, post);
+      g.fillStyle(0x1f3550, 0.94);
+      g.fillRoundedRect(p.x - w / 2, p.y - post - hgt, w, hgt, 8 * ts);
+      g.lineStyle(3 * ts, 0xffd36b, 1);
+      g.strokeRoundedRect(p.x - w / 2, p.y - post - hgt, w, hgt, 8 * ts);
+      sign.text.setPosition(p.x, p.y - post - 5 * ts).setDepth(130 + p.y);
+      sign.icon.setPosition(p.x + w / 2, p.y - post - hgt).setScale(Math.max(0.4, ts * 0.8)).setDepth(131 + p.y);
+      g.setDepth(Math.max(g.depth, 129 + p.y));
+    }
   }
 
   drawGround(cam) {
@@ -1146,11 +1271,11 @@ export class PlayScene extends Phaser.Scene {
   }
 
   drawGates(cam) {
-    const next = this.rows.find((r) => !r.triggered);
-    const aimed = next ? pickGateIndex(this.laneX, next.gates.length) : -1;
+    const next = this.rows.filter((r) => !r.triggered && r.y > this.frontY - 1).sort((a, b) => a.y - b.y)[0];
+    const aimed = next ? rowGateIndex(next, this.laneX) : -1;
     for (const row of this.rows) {
       const mid = project(row.y, 0, cam);
-      const passed = row.triggered && this.frontY > row.y + 80;
+      const passed = (row.triggered && this.frontY > row.y + 80) || this.world.rows[row.index].skipped;
       const show = mid.vis && mid.t > -0.02 && !passed;
       row.gfx.clear();
       row.gfx.setDepth(120 + mid.y);
@@ -1160,8 +1285,7 @@ export class PlayScene extends Phaser.Scene {
       }
       const n = row.gates.length;
       for (let i = 0; i < n; i++) {
-        const left = -1 + i * (2 / n);
-        const right = -1 + (i + 1) * (2 / n);
+        const [left, right] = gateEdges(row, i);
         const pL = project(row.y, left, cam);
         const pR = project(row.y, right, cam);
         const cx = (pL.x + pR.x) / 2;
@@ -1301,7 +1425,7 @@ export class PlayScene extends Phaser.Scene {
         img.setVisible(false);
         continue;
       }
-      const slot = blueSlot(i, blueVis, this.laneX, this.frontY);
+      const slot = blueSlot(i, blueVis, this.laneX, this.frontY, this.crowdBounds);
       const p = project(slot.y, slot.x, cam);
       if (!p.vis) {
         img.setVisible(false);
@@ -1392,7 +1516,8 @@ export class PlayScene extends Phaser.Scene {
       for (let i = 0; i < n && slot < this.reds.length; i++, slot++) {
         const img = this.reds[slot];
         const ang = i * 2.399963;
-        const ex = Math.cos(ang) * Math.min(0.72, 0.08 + (i % 5) * 0.07);
+        const spreadX = w.fork != null ? 0.3 : 0.72;
+        const ex = (w.x || 0) + Math.cos(ang) * Math.min(spreadX, 0.08 + (i % 5) * 0.07);
         const ey = w.front + 16 + (i % 4) * 22 - this.lunge * 26;
         const anchor = project(ey, ex, cam);
         if (!anchor.vis || anchor.t < 0) {
@@ -1789,7 +1914,15 @@ export class PlayScene extends Phaser.Scene {
   }
 }
 
-function blueSlot(i, count, laneX, frontY) {
+function casualOpts() {
+  const q = new URLSearchParams(window.location.search);
+  const o = q.get('grab') === '1' ? { greed: 1, reach: 0.9 } : {};
+  const b = q.get('branch');
+  if (b !== null) o.branch = /^\d+$/.test(b) ? Number(b) : b;
+  return o;
+}
+
+function blueSlot(i, count, laneX, frontY, bounds) {
   const n = Math.max(1, count);
   const t = n === 1 ? 0 : i / (n - 1);
   const col = i % 5;
@@ -1799,5 +1932,7 @@ function blueSlot(i, count, laneX, frontY) {
   const jitter = ((i * 37) % 11) / 11 - 0.5;
   let x = laneX + centered * widen + jitter * 0.03;
   if (t < 0.22) x = laneX + centered * 0.05 + jitter * 0.02;
-  return { x: clamp(x, -0.9, 0.9), y, spin: jitter * 0.4 };
+  const lo = bounds ? bounds[0] - 0.02 : -0.9;
+  const hi = bounds ? bounds[1] + 0.02 : 0.9;
+  return { x: clamp(x, lo, hi), y, spin: jitter * 0.4 };
 }
