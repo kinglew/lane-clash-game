@@ -14,6 +14,8 @@ import {
   typeTag,
   BOSS_TYPES,
   strongAgainst,
+  followLane,
+  createCasualMouse,
 } from '../logic.js';
 import {
   FONT,
@@ -89,7 +91,11 @@ export class PlayScene extends Phaser.Scene {
     this.world = createWorld(this.level, START_FRONT);
     this.count = this.world.count;
     this.frontY = this.world.frontY;
-    this.goTimer = this.smoke ? 0 : GO_DELAY;
+    const cs = this.registry.get('casualSeed');
+    this.casualMouse = this.levelIndex === 0 && cs != null && this.smoke ? createCasualMouse(cs) : null;
+    if (this.casualMouse) this.smoke = false;
+    this.casualRun = !!this.casualMouse;
+    this.goTimer = this.casualMouse ? GO_DELAY : (this.smoke ? 0 : GO_DELAY);
     this.clock = 0;
     this.pop = 1;
     this.badFlash = 0;
@@ -368,6 +374,7 @@ export class PlayScene extends Phaser.Scene {
     if (p.worldY < ui.top + 70 && p.worldX > ui.right - 170) return;
     if (p.worldY > this.slotY - 30) return;
     this.pointerStamp = this.time.now;
+    this.pointerActive = true;
     this.pointerLane = laneFromScreen(p.worldX);
     this.sfx.ensure();
   }
@@ -423,7 +430,13 @@ export class PlayScene extends Phaser.Scene {
   }
 
   steer(dt) {
-    if (this.smoke && this.mode === 'run') {
+    if (this.casualMouse && this.mode === 'run') {
+      // Scripted casual human: feeds the normal pointer path below, same as a real mouse.
+      this.world.laneX = this.laneX;
+      this.pointerLane = this.casualMouse(this.world, this.level, dt);
+      this.pointerStamp = this.time.now;
+      this.pointerActive = true;
+    } else if (this.smoke && this.mode === 'run') {
       // Reference player: same autopilot the tests use, steering at keyboard speed.
       const aim = autoPilot(this.world, this.level, this.smokePlan(), this.laneX);
       if (aim.slot !== this.world.loadout.equipped) this.trySwitch(aim.slot);
@@ -439,10 +452,11 @@ export class PlayScene extends Phaser.Scene {
     if (key !== 0) {
       this.laneX = clamp(this.laneX + key * STEER_SPEED * dt, -LANE_CLAMP, LANE_CLAMP);
       this.targetX = this.laneX;
-    } else if (this.time.now - this.pointerStamp < 90) {
+    } else if (this.pointerActive) {
+      // Keep following the last pointer spot even after the mouse stops moving
+      // (the old code froze the crowd 90 ms after the last mouse event).
       this.targetX = this.pointerLane;
-      this.laneX += (this.targetX - this.laneX) * Math.min(1, 18 * dt);
-      this.laneX = clamp(this.laneX, -LANE_CLAMP, LANE_CLAMP);
+      this.laneX = followLane(this.laneX, this.targetX, dt);
     }
   }
 

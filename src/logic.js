@@ -839,43 +839,121 @@ export function seededRandom(seed) {
   };
 }
 
-export function casualPlay(level, seed = 1, opts = {}) {
+/**
+ * The one lane-steering rule, shared by the Phaser scene (mouse/touch and smoke
+ * driver) and every simulated player: ease toward the target, never faster than
+ * STEER_MAX lanes per second. Keys use STEER_SPEED directly in the scene.
+ */
+export const STEER_FOLLOW = 14;
+export const STEER_MAX = 3.2;
+export function followLane(lane, target, dt) {
+  const d = target - lane;
+  let move = d * Math.min(1, STEER_FOLLOW * dt);
+  const cap = STEER_MAX * dt;
+  if (move > cap) move = cap;
+  if (move < -cap) move = -cap;
+  if (Math.abs(d) < 1e-4) move = d;
+  const next = lane + move;
+  return Math.max(-LANE_CLAMP, Math.min(LANE_CLAMP, next));
+}
+
+function gateAppeal(op, count) {
+  if (op.kind === 'mul') return count * (op.value - 1);
+  if (op.kind === 'add') return op.value;
+  if (op.kind === 'sub') return -op.value;
+  if (op.kind === 'div') return -count / 2;
+  return 0;
+}
+
+function gauss(rnd) {
+  return (rnd() + rnd() + rnd() - 1.5) / 0.5; // ~N(0,1)
+}
+
+/**
+ * A casual human holding a mouse. It does not know the level: it reacts to what it
+ * sees (gates, jet, crates) about 0.35 s late, picks the best-looking gate it thinks
+ * it can reach (biased to stay near where it is), misses some, aims with error,
+ * drifts back toward the middle, never dodges and never presses 1/2/3.
+ * Returns a stateful function (world, level, dt) => pointer target lane.
+ * The Phaser scene uses this exact function for ?casual=SEED runs.
+ */
+export function createCasualMouse(seed = 1, opts = {}) {
   const rnd = seededRandom(seed);
   const delay = opts.delay != null ? opts.delay : 0.35;
-  const err = opts.error != null ? opts.error : 0.1;
+  const sd = opts.error != null ? opts.error : 0.14;
   const giveUp = opts.giveUp != null ? opts.giveUp : 0.3;
+  const reach = opts.reach != null ? opts.reach : 0.75;
+  const look = opts.look != null ? opts.look : 650;
+  const greed = opts.greed != null ? opts.greed : 0.5;
+  const choice = new Map();
+  let jetPlan = null;
+  const pickPlan = new Map();
+  const queue = [];
+  let held = (rnd() * 2 - 1) * 0.15;
+  let clock = 0;
+  return function casualMouse(world, level, dt) {
+    clock += dt;
+    const lane = world.laneX;
+    let intent = null;
+    let nearest = Infinity;
+    for (const row of world.rows) {
+      if (row.triggered) continue;
+      const ahead = row.y - world.frontY;
+      if (ahead < 0 || ahead > look || ahead >= nearest) continue;
+      nearest = ahead;
+      if (!choice.has(row.index)) {
+        const n = row.gates.length;
+        let best = null;
+        for (let i = 0; i < n; i++) {
+          const cx = laneCenter(i, n);
+          const dist = Math.abs(cx - lane);
+          if (dist > reach) continue;
+          const v = gateAppeal(row.gates[i], world.count) - dist * 12 + gauss(rnd) * 6;
+          if (!best || v > best.v) best = { i, cx, v };
+        }
+        let aim = best ? best.cx : lane;
+        if (best && Math.abs(best.cx - lane) > 0.3 && rnd() < giveUp) aim = lane;
+        choice.set(row.index, aim + gauss(rnd) * sd);
+      }
+      intent = choice.get(row.index);
+    }
+    if (!world.jet.resolved) {
+      const ahead = world.jet.y - world.frontY;
+      if (ahead > 0 && ahead < look && ahead < nearest) {
+        if (jetPlan === null) jetPlan = Math.abs(world.jet.x - lane) < 0.45 && rnd() < 0.85;
+        if (jetPlan) { intent = world.jet.x + gauss(rnd) * sd * 0.6; nearest = ahead; }
+      }
+    }
+    for (const pk of world.pickups) {
+      if (pk.resolved) continue;
+      const ahead = pk.y - world.frontY;
+      if (ahead < 0 || ahead > look * 0.7 || ahead > nearest) continue;
+      const key = pk.source + ':' + pk.y + ':' + pk.x;
+      if (!pickPlan.has(key)) pickPlan.set(key, Math.abs(pk.x - lane) < 0.4 && rnd() < greed);
+      if (pickPlan.get(key)) { intent = pk.x + gauss(rnd) * sd * 0.5; nearest = ahead; }
+    }
+    if (intent === null) intent = held * 0.98 + 0 * 0.02; // drift to the middle when idle
+    held = intent;
+    queue.push({ t: clock, v: intent });
+    while (queue.length > 1 && queue[1].t <= clock - delay) queue.shift();
+    return Math.max(-LANE_CLAMP, Math.min(LANE_CLAMP, queue[0].v));
+  };
+}
+
+/** Run a level with the casual mouse, using the scene's step and steering rules. */
+export function casualPlay(level, seed = 1, opts = {}) {
   const dt = opts.dt || 1 / 60;
   const world = createWorld(level, START_FRONT);
-  const plan = level.proofWin.gates;
-  // Decide per row up front: aim lane (with error), or give up and drift.
-  const rowAim = level.rows.map((row, i) => {
-    const want = laneCenter(plan[i], row.gates.length);
-    const offCenter = Math.abs(want) > 0.3;
-    if (offCenter && rnd() < giveUp) return null;
-    return want + (rnd() * 2 - 1) * err;
-  });
-  const takeJet = Math.abs(level.jet.x) < 0.3 || rnd() < 0.5;
+  const mouse = createCasualMouse(seed, opts);
   let lane = 0;
-  let rest = (rnd() * 2 - 1) * 0.15;
-  const history = [];
   let guard = 0;
+  let wait = opts.goDelay != null ? opts.goDelay : 0.28;
   while (!world.won && !world.lost && guard < 400000) {
     guard += 1;
-    let intent = rest;
-    const options = [];
-    for (const row of world.rows) {
-      if (!row.triggered && row.y > world.frontY && row.y - world.frontY < 900) options.push({ y: row.y, lane: rowAim[row.index] });
-    }
-    if (takeJet && !world.jet.resolved && world.jet.y > world.frontY) options.push({ y: world.jet.y, lane: level.jet.x });
-    options.sort((a, b) => a.y - b.y);
-    if (options.length && options[0].lane !== null) intent = options[0].lane;
-    else if (options.length) intent = lane; // gave up: keep going straight
-    history.push({ t: world.time, intent });
-    while (history.length > 1 && history[1].t <= world.time - delay) history.shift();
-    const aim = Math.max(-LANE_CLAMP, Math.min(LANE_CLAMP, history[0].intent));
-    const step = STEER_SPEED * dt;
-    const d = aim - lane;
-    lane = Math.abs(d) <= step ? aim : lane + Math.sign(d) * step;
+    world.laneX = lane;
+    const target = mouse(world, level, dt);
+    lane = followLane(lane, target, dt);
+    if (wait > 0) { wait -= dt; continue; }
     stepWorld(world, dt, lane);
     if (world.frontY > level.boss.y + 2500) break;
   }

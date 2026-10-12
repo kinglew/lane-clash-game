@@ -4,7 +4,10 @@ import { PlayScene } from './scenes/play.js';
 import { createSfx } from './sfx.js';
 import { setStatus, touchLane } from './status.js';
 
-const smoke = new URLSearchParams(window.location.search).get('smoke') === '1';
+const params = new URLSearchParams(window.location.search);
+// ?casual=SEED auto-plays level 1 through the mouse path with the casual-human model.
+const casualSeed = params.get('casual');
+const smoke = params.get('smoke') === '1' || casualSeed !== null;
 touchLane({ booted: false, result: null, log: [], smoke });
 
 const sfx = createSfx();
@@ -29,6 +32,7 @@ const game = new Phaser.Game({
     preBoot(g) {
       g.registry.set('sfx', sfx);
       g.registry.set('bootSmoke', smoke);
+      g.registry.set('casualSeed', casualSeed !== null ? Number(casualSeed) || 1 : null);
     },
     postBoot(g) {
       touchLane({ booted: true });

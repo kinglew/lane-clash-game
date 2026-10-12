@@ -268,7 +268,8 @@ test('multipliers are rare, small, and sit next to bad gates', () => {
         if (g.kind !== 'mul') return;
         const edge = i === 0 || i === row.gates.length - 1;
         const nextToBad = (row.gates[i - 1] && !row.gates[i - 1].good) || (row.gates[i + 1] && !row.gates[i + 1].good);
-        assert.ok(edge || nextToBad, level.name + ' row ' + row.y + ' multiplier is too easy to reach');
+        assert.ok(level.id === 1 || edge || nextToBad, // level 1 has no traps beside its x2s
+           level.name + ' row ' + row.y + ' multiplier is too easy to reach');
       });
     }
   }
@@ -439,4 +440,38 @@ test('level 1 is safe down the middle: good center gates and a counter drop', ()
     if (w.loadout.slots.includes(centerDrop.drop)) got += 1;
   }
   assert.ok(got >= 14, 'casual players usually pick up the center drop (' + got + '/20)');
+});
+
+test('faithful casual mouse (same step + followLane the scene uses) wins level 1, even sloppy', async () => {
+  const { casualPlay, followLane } = await import('../src/logic.js');
+  // followLane never teleports and keeps moving after the pointer stops.
+  let lane = 0;
+  for (let i = 0; i < 60; i++) lane = followLane(lane, 0.6, 1 / 60);
+  assert.ok(Math.abs(lane - 0.6) < 0.01, 'reaches a held pointer target: ' + lane);
+  const sloppy = { error: 0.22, giveUp: 0.6, reach: 0.5, delay: 0.45, greed: 0.3 };
+  let normal = 0;
+  let rough = 0;
+  for (let s = 1; s <= 40; s++) {
+    if (casualPlay(LEVELS[0], s).won) normal++;
+    if (casualPlay(LEVELS[0], s, sloppy).won) rough++;
+  }
+  assert.ok(normal >= 39, 'casual L1 wins ' + normal + '/40');
+  assert.ok(rough >= 36, 'sloppy L1 wins ' + rough + '/40');
+});
+
+test('level 1 boss falls to a 64-crowd still holding the resisted Needle', async () => {
+  const m = await import('../src/logic.js');
+  const l = LEVELS[0];
+  for (const id of ['needle', 'shot']) {
+    const w = m.createWorld(l, l.boss.y - 900);
+    for (const x of w.waves) x.alive = 0;
+    w.rows.forEach((r) => { r.triggered = true; });
+    w.jet.resolved = true;
+    w.count = 64;
+    w.loadout.slots = [id, null, null];
+    w.weapon = m.heldWeapon(w.loadout);
+    let t = 0;
+    while (!w.won && !w.lost && t < 60) { m.stepWorld(w, 1 / 60, 0); t += 1 / 60; }
+    assert.ok(w.won, id + ' with 64 should beat Red Camp');
+  }
 });
