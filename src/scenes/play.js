@@ -92,7 +92,7 @@ export class PlayScene extends Phaser.Scene {
     this.count = this.world.count;
     this.frontY = this.world.frontY;
     const cs = this.registry.get('casualSeed');
-    this.casualMouse = this.levelIndex === 0 && cs != null && this.smoke ? createCasualMouse(cs) : null;
+    this.casualMouse = this.levelIndex === 0 && cs != null && this.smoke ? createCasualMouse(cs, new URLSearchParams(window.location.search).get('grab') === '1' ? { greed: 1, reach: 0.9 } : {}) : null;
     if (this.casualMouse) this.smoke = false;
     this.casualRun = !!this.casualMouse;
     this.goTimer = this.casualMouse ? GO_DELAY : (this.smoke ? 0 : GO_DELAY);
@@ -499,6 +499,8 @@ export class PlayScene extends Phaser.Scene {
       count: shown(this.count),
       mode: this.mode,
       log: this.log,
+      slots: this.world.loadout.slots.slice(),
+      equipped: this.world.loadout.equipped,
     });
     this.draw();
   }
@@ -587,8 +589,13 @@ export class PlayScene extends Phaser.Scene {
 
   juiceWeapon(ev) {
     this.log.push({ type: 'weapon', hit: ev.hit, id: ev.id, reason: ev.reason, slot: ev.slot, count: shown(ev.count) });
-    if (!ev.hit) return;
     const p = project(ev.y, ev.x, this.camY());
+    if (!ev.hit) {
+      // Visible reason when a crate is ignored: the crowd never overlapped it.
+      this.spawnFloater(clamp(p.x, 120, 420), Math.max(200, Math.min(760, p.y - 18)), 'MISSED ' + ev.name.toUpperCase(), '#ffd0d4', 1100, 30);
+      this.log.push({ type: 'floater', text: 'MISSED ' + ev.name.toUpperCase() });
+      return;
+    }
     let label = ev.name.toUpperCase();
     let color = '#b9ecff';
     if (ev.reason === 'full') { label = 'FULL'; color = '#ffd0d4'; }
@@ -600,8 +607,16 @@ export class PlayScene extends Phaser.Scene {
     }
     if (ev.reason === 'have' && ev.equipped) { label = 'EQUIPPED ' + (ev.slot + 1) + ' ' + ev.name.toUpperCase(); color = '#b9ecff'; }
     const fx = clamp(p.x, 120, 420);
-    const fy = Math.max(170, p.y - 18);
-    this.spawnFloater(fx, fy, label, color);
+    // Keep the floater on screen above the crowd and HUD, and hold it long enough to read.
+    const fy = Math.max(220, Math.min(this.frontScreenY() - 120, p.y - 18));
+    this.spawnFloater(fx, fy, label, color, 1500, 34);
+    this.log.push({ type: 'floater', text: label, slots: this.world.loadout.slots.slice() });
+    if (ev.slot >= 0 && this.slotTexts[ev.slot]) {
+      const st = this.slotTexts[ev.slot];
+      this.tweens.killTweensOf(st);
+      st.setScale(1.5);
+      this.tweens.add({ targets: st, scale: 1, duration: 450, ease: 'Back.easeOut' });
+    }
     if (ev.reason !== 'full') {
       // Flash the icon of what the new gun beats next to the floater.
       const types = strongAgainst(ev.id);
@@ -926,10 +941,14 @@ export class PlayScene extends Phaser.Scene {
     this.scene.start('menu');
   }
 
-  spawnFloater(x, y, text, color) {
+  frontScreenY() {
+    return project(this.frontY, this.laneX, this.camY()).y;
+  }
+
+  spawnFloater(x, y, text, color, duration = 680, size = 40) {
     const t = this.add.text(x, y, text, {
       fontFamily: FONT,
-      fontSize: '40px',
+      fontSize: size + 'px',
       fontStyle: 'bold',
       color,
       stroke: '#1a120c',
@@ -938,8 +957,8 @@ export class PlayScene extends Phaser.Scene {
     this.tweens.add({
       targets: t,
       y: y - 86,
-      alpha: 0,
-      duration: 680,
+      alpha: { from: 1, to: 0 },
+      duration,
       ease: 'Cubic.easeOut',
       onComplete: () => { if (t.active) t.destroy(); },
     });
@@ -1219,6 +1238,11 @@ export class PlayScene extends Phaser.Scene {
       const bob = Math.sin(this.clock * 5 + n) * 3 * p.scale;
       const s = Math.max(0.35, p.scale);
       this.weaponGfx.setDepth(121 + p.y);
+      // Ground ring = the logical radius, so the visual and the hitbox match.
+      const l = project(drop.y, drop.x - drop.radius, cam);
+      const r = project(drop.y, drop.x + drop.radius, cam);
+      this.weaponGfx.lineStyle(Math.max(1.5, 3 * s), 0x8fe3ff, 0.7);
+      this.weaponGfx.strokeEllipse(p.x, p.y + 12 * s, Math.max(10, r.x - l.x), Math.max(6, (r.x - l.x) * 0.28));
       if (n < this.crates.length) {
         const crate = this.crates[n];
         crate.setVisible(true);

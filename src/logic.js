@@ -133,6 +133,7 @@ export function giveWeapon(loadout, id, equipNew = true) {
   }
   const replaced = slots[replace];
   slots[replace] = w.id;
+  if (equipNew) loadout.equipped = replace; // a swapped-in gun is the one you hold
   return { ok: true, reason: 'swap', id: w.id, name: w.name, slot: replace, replaced };
 }
 
@@ -451,9 +452,26 @@ function spawnDrop(world, unit) {
   return { id: drop.id, name: weaponById(drop.id).name, x: drop.x, y: drop.y, source: drop.source };
 }
 
-function takePickup(world, pickup) {
+/**
+ * Lateral half-width (lane units) of the drawn crowd at a given depth behind its
+ * front. The scene's blueSlot uses the same shape, so what you see is the hitbox.
+ */
+export function crowdHalfAt(depth) {
+  const t = Math.max(0, Math.min(1, depth / CROWD_DEPTH));
+  if (t < 0.22) return 0.05;
+  return 0.035 + Math.pow(t, 0.85) * 0.36;
+}
+
+/** Does the crowd body (front to back) overlap this pickup right now? */
+export function crowdTouches(world, pickup) {
+  const depth = world.frontY - pickup.y;
+  if (depth < 0 || depth > CROWD_DEPTH) return false;
+  return Math.abs(world.laneX - pickup.x) <= pickup.radius + crowdHalfAt(depth) + 1e-9;
+}
+
+function takePickup(world, pickup, passed = false) {
+  const hit = !passed;
   pickup.resolved = true;
-  const hit = Math.abs(world.laneX - pickup.x) <= pickup.radius + 1e-9;
   pickup.taken = hit;
   if (!hit) {
     return { hit: false, id: pickup.id, name: weaponById(pickup.id).name, count: world.count, reason: 'miss', slot: -1, source: pickup.source, x: pickup.x, y: pickup.y };
@@ -589,8 +607,18 @@ export function stepWorld(world, dt, laneX) {
     if (!row.triggered) pending.push({ y: row.y, type: 'row', row });
   }
   if (!world.jet.resolved) pending.push({ y: world.jet.y, type: 'jet' });
+  // Pickups: any part of the crowd body touching the crate collects it, checked every
+  // step while the crowd runs over it (not only the instant the front crosses).
   for (const pickup of world.pickups) {
-    if (!pickup.resolved) pending.push({ y: pickup.y, type: 'weapon', pickup });
+    if (pickup.resolved) continue;
+    if (crowdTouches(world, pickup)) {
+      const got = takePickup(world, pickup);
+      events.weapons.push(got);
+      events.weapon = got;
+    } else if (world.frontY - CROWD_DEPTH > pickup.y) {
+      const got = takePickup(world, pickup, true);
+      events.weapons.push(got);
+    }
   }
   pending.sort((a, b) => a.y - b.y);
   for (const e of pending) {
@@ -613,10 +641,6 @@ export function stepWorld(world, dt, laneX) {
       world.jet.taken = hit;
       if (hit) world.count = applyOp(world.count, world.jet.op);
       events.jet = { hit, count: world.count };
-    } else if (!e.pickup.resolved) {
-      const got = takePickup(world, e.pickup);
-      events.weapons.push(got);
-      events.weapon = got;
     }
   }
 

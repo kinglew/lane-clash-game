@@ -232,12 +232,14 @@ test('a loadout holds three weapons and switches the one that fires', () => {
   giveWeapon(loadout, 'spread');
   const ball = giveWeapon(loadout, 'ball');
   assert.equal(ball.reason, 'swap');
-  assert.notEqual(ball.slot, loadout.equipped);
+  assert.equal(ball.slot, loadout.equipped, "swapped-in gun is held");
   assert.equal(loadout.slots[ball.slot], 'ball');
   assert.equal(giveWeapon(loadout, 'spread').reason, 'full');
   assert.equal(giveWeapon(loadout, 'nope').reason, 'full');
-  const flipped = switchWeapon(loadout, ball.slot);
-  assert.equal(flipped.changed, true);
+  assert.equal(heldWeapon(loadout).id, 'ball');
+  const other = ball.slot === 0 ? 1 : 0;
+  assert.equal(switchWeapon(loadout, other).changed, true);
+  assert.equal(switchWeapon(loadout, ball.slot).changed, true);
   assert.equal(heldWeapon(loadout).id, 'ball');
   assert.equal(switchWeapon(loadout, ball.slot).reason, 'same');
   const spare = freshLoadout();
@@ -474,4 +476,77 @@ test('level 1 boss falls to a 64-crowd still holding the resisted Needle', async
     while (!w.won && !w.lost && t < 60) { m.stepWorld(w, 1 / 60, 0); t += 1 / 60; }
     assert.ok(w.won, id + ' with 64 should beat Red Camp');
   }
+});
+
+test('weapon pickups: touching the crate with any part of the crowd always fills a slot', async () => {
+  const m = await import('../src/logic.js');
+  const run = (level, pk, lane) => {
+    const w = m.createWorld(level, pk.y - 400);
+    for (const x of w.waves) x.alive = 0;
+    w.rows.forEach((r) => { r.triggered = true; });
+    w.jet.resolved = true;
+    w.cannon = 0;
+    w.count = 50;
+    w.pickups = [Object.assign({ resolved: false, taken: false }, pk)];
+    const evs = [];
+    for (let i = 0; i < 400 && !w.pickups[0].resolved; i++) {
+      const ev = m.stepWorld(w, 1 / 60, lane);
+      evs.push(...ev.weapons);
+    }
+    return { w, evs };
+  };
+  const L = LEVELS[0];
+  // Drop at the lane centre, crowd passing at many offsets that visually overlap it.
+  for (const lane of [-0.5, -0.35, -0.2, 0, 0.2, 0.35, 0.5]) {
+    const { w, evs } = run(L, { y: 3000, x: 0, radius: 0.16, id: 'ball', source: 'mid' }, lane);
+    assert.equal(evs.length, 1, 'one event at lane ' + lane);
+    assert.ok(evs[0].hit, 'crowd body over the crate must collect it at lane ' + lane);
+    assert.equal(w.loadout.slots[1], 'ball');
+    assert.equal(w.weapon.id, 'ball', 'auto-equipped');
+    assert.equal(evs[0].reason, 'slot');
+  }
+  // Edge pad and wave drop.
+  for (const pk of [{ y: 1250, x: 0.78, radius: 0.16, id: 'bolts', source: 'pad' }, { y: 2000, x: -0.82, radius: 0.16, id: 'needle', source: 'wave' }]) {
+    const { w, evs } = run(L, pk, Math.sign(pk.x) * 0.6);
+    assert.ok(evs[0].hit, pk.id + ' at the edge should be collected');
+    assert.equal(w.loadout.slots[1], pk.id);
+  }
+  // A clear miss reports a visible miss event and leaves slots as they were.
+  const miss = run(L, { y: 3000, x: 0.8, radius: 0.16, id: 'ball', source: 'mid' }, -0.6);
+  assert.equal(miss.evs.length, 1);
+  assert.equal(miss.evs[0].hit, false);
+  assert.equal(miss.evs[0].reason, 'miss');
+  // The crowd hitbox is the drawn crowd shape.
+  assert.equal(m.crowdHalfAt(0), 0.05);
+  assert.ok(m.crowdHalfAt(230) > 0.39);
+});
+
+test('real drops from waves and the mid-boss spawn ahead of the crowd and fill slots', async () => {
+  const m = await import('../src/logic.js');
+  for (const L of LEVELS.slice(0, 3)) {
+    const w = m.createWorld(L, 0);
+    const seen = [];
+    let guard = 0;
+    while (!w.won && !w.lost && guard++ < 60000) {
+      const target = w.pickups.find((p) => !p.resolved && p.y > w.frontY - 200);
+      const ev = m.stepWorld(w, 1 / 60, target ? target.x : 0);
+      for (const d of ev.drops || []) assert.ok(d.y > w.frontY, 'drop spawned ahead');
+      for (const g of ev.weapons) seen.push(g);
+      if (w.frontY > L.boss.y - 300) break;
+    }
+    const missed = seen.filter((g) => !g.hit);
+    assert.equal(missed.length, 0, L.name + ' steering onto every crate missed ' + JSON.stringify(missed));
+    for (const g of seen) assert.ok(w.loadout.slots.includes(g.id), L.name + ' holds ' + g.id);
+  }
+});
+
+test('picking up a 4th gun with a full rack swaps it in AND equips it', async () => {
+  const m = await import('../src/logic.js');
+  const lo = { slots: ['shot', 'needle', 'bolts'], equipped: 2 };
+  const got = m.giveWeapon(lo, 'ball', true);
+  assert.equal(got.reason, 'swap');
+  assert.equal(lo.slots[got.slot], 'ball');
+  assert.equal(lo.equipped, got.slot, 'swapped gun must be held');
+  assert.equal(m.heldWeapon(lo).id, 'ball');
+  assert.ok(lo.slots.includes('bolts'), 'the gun you were holding is kept');
 });
